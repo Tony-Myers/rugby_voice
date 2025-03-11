@@ -23,7 +23,6 @@ OPENAI_API_KEY = st.secrets.get("openai_api_key", None)
 SENDER_EMAIL = st.secrets.get("sender_email", None)
 EMAIL_PASSWORD = st.secrets.get("email_password", None)
 RECEIVER_EMAIL = "tony.myers@staff.newman.ac.uk"
-GOOGLE_CREDENTIALS = st.secrets.get("google_credentials", None)
 
 # If any secrets are missing, stop the app and show an error
 missing_secrets = []
@@ -35,8 +34,6 @@ if not SENDER_EMAIL:
     missing_secrets.append("sender_email")
 if not EMAIL_PASSWORD:
     missing_secrets.append("email_password")
-if not GOOGLE_CREDENTIALS:
-    missing_secrets.append("google_credentials")
 
 if missing_secrets:
     st.error(
@@ -58,9 +55,14 @@ interview_topics = [
 total_questions = len(interview_topics)
 
 # --- Setup Google Cloud credentials ---
-credentials = service_account.Credentials.from_service_account_info(
-    GOOGLE_CREDENTIALS
-)
+if "google_credentials" in st.secrets:
+    # Get credentials from secrets
+    credentials = service_account.Credentials.from_service_account_info(
+        st.secrets["google_credentials"]
+    )
+else:
+    # No credentials in secrets
+    credentials = None
 
 def generate_response(prompt, conversation_history=None):
     try:
@@ -133,67 +135,85 @@ def send_email(transcript_md):
         return False
 
 def transcribe_audio(audio_bytes):
+    # Check if credentials are available
+    if credentials is None:
+        st.error("Google Cloud credentials not configured")
+        return "Speech-to-text unavailable. Please type your response."
+    
     # Save audio bytes to a temporary file
     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
         tmp_file.write(audio_bytes)
         tmp_file_path = tmp_file.name
     
-    # Create speech client
-    client = speech.SpeechClient(credentials=credentials)
-    
-    # Load the audio file
-    with open(tmp_file_path, "rb") as audio_file:
-        content = audio_file.read()
-    
-    # Configure the speech recognition request
-    audio = speech.RecognitionAudio(content=content)
-    config = speech.RecognitionConfig(
-        encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
-        sample_rate_hertz=48000,  # Adjust if needed based on recording parameters
-        language_code="en-GB",
-    )
-    
-    # Perform speech recognition
-    response = client.recognize(config=config, audio=audio)
-    
-    # Delete the temporary file
-    os.unlink(tmp_file_path)
-    
-    # Extract and return the transcript
-    transcript = ""
-    for result in response.results:
-        transcript += result.alternatives[0].transcript
-    
-    return transcript
+    try:
+        # Create speech client
+        client = speech.SpeechClient(credentials=credentials)
+        
+        # Load the audio file
+        with open(tmp_file_path, "rb") as audio_file:
+            content = audio_file.read()
+        
+        # Configure the speech recognition request
+        audio = speech.RecognitionAudio(content=content)
+        config = speech.RecognitionConfig(
+            encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+            sample_rate_hertz=48000,  # Adjust if needed based on recording parameters
+            language_code="en-GB",
+        )
+        
+        # Perform speech recognition
+        response = client.recognize(config=config, audio=audio)
+        
+        # Extract and return the transcript
+        transcript = ""
+        for result in response.results:
+            transcript += result.alternatives[0].transcript
+        
+        return transcript
+    except Exception as e:
+        st.error(f"Error in speech recognition: {e}")
+        return f"Error: {str(e)}"
+    finally:
+        # Delete the temporary file
+        if os.path.exists(tmp_file_path):
+            os.unlink(tmp_file_path)
 
 def text_to_speech(text):
-    # Create TTS client
-    client = texttospeech.TextToSpeechClient(credentials=credentials)
+    # Check if credentials are available
+    if credentials is None:
+        return None
     
-    # Set up the input text
-    synthesis_input = texttospeech.SynthesisInput(text=text)
-    
-    # Configure the voice
-    voice = texttospeech.VoiceSelectionParams(
-        language_code="en-GB",
-        name="en-GB-Neural2-B",  # A neutral British voice
-        ssml_gender=texttospeech.SsmlVoiceGender.NEUTRAL
-    )
-    
-    # Configure the audio output
-    audio_config = texttospeech.AudioConfig(
-        audio_encoding=texttospeech.AudioEncoding.MP3
-    )
-    
-    # Generate the speech
-    response = client.synthesize_speech(
-        input=synthesis_input,
-        voice=voice,
-        audio_config=audio_config
-    )
-    
-    # Return the audio content
-    return response.audio_content
+    try:
+        # Create TTS client
+        client = texttospeech.TextToSpeechClient(credentials=credentials)
+        
+        # Set up the input text
+        synthesis_input = texttospeech.SynthesisInput(text=text)
+        
+        # Configure the voice
+        voice = texttospeech.VoiceSelectionParams(
+            language_code="en-GB",
+            name="en-GB-Neural2-B",  # A neutral British voice
+            ssml_gender=texttospeech.SsmlVoiceGender.NEUTRAL
+        )
+        
+        # Configure the audio output
+        audio_config = texttospeech.AudioConfig(
+            audio_encoding=texttospeech.AudioEncoding.MP3
+        )
+        
+        # Generate the speech
+        response = client.synthesize_speech(
+            input=synthesis_input,
+            voice=voice,
+            audio_config=audio_config
+        )
+        
+        # Return the audio content
+        return response.audio_content
+    except Exception as e:
+        st.error(f"Error in text-to-speech: {e}")
+        return None
 
 def main():
     # --- Password authentication ---
@@ -213,6 +233,10 @@ def main():
     # --- Main interview content ---
     st.title("Rugby Taster Session Voice Interview Bot")
 
+    # Check if Google credentials are available and show a message
+    if credentials is None:
+        st.warning("Google Cloud Speech services are not configured. Voice features will not be available.")
+    
     if "conversation" not in st.session_state:
         st.session_state.conversation = []
     if "current_question" not in st.session_state:
@@ -221,11 +245,12 @@ def main():
             "To begin, can you tell me a bit about yourself and any previous experience with rugby or other sports?"
         )
         # Convert initial question to speech
-        try:
-            st.session_state.current_audio = text_to_speech(st.session_state.current_question)
-        except Exception as e:
-            st.warning(f"Unable to generate speech: {e}")
-            st.session_state.current_audio = None
+        if credentials is not None:
+            try:
+                st.session_state.current_audio = text_to_speech(st.session_state.current_question)
+            except Exception as e:
+                st.warning(f"Unable to generate speech: {e}")
+                st.session_state.current_audio = None
 
     st.write("""
     **Information Sheet and Consent**  
@@ -246,20 +271,21 @@ def main():
         if "current_audio" in st.session_state and st.session_state.current_audio:
             st.audio(st.session_state.current_audio, format="audio/mp3")
         
-        # Audio recording
-        st.write("**Speak your answer:**")
-        audio_bytes = audio_recorder()
-        
-        # Process recorded audio
-        if audio_bytes:
-            st.success("Audio recorded! Transcribing...")
-            try:
-                transcript = transcribe_audio(audio_bytes)
-                st.session_state.current_transcript = transcript
-                st.write(f"**Transcribed:** {transcript}")
-            except Exception as e:
-                st.error(f"Error transcribing audio: {str(e)}")
-                st.session_state.current_transcript = ""
+        # Voice recording section (only if Google credentials are available)
+        if credentials is not None:
+            st.write("**Speak your answer:**")
+            audio_bytes = audio_recorder()
+            
+            # Process recorded audio
+            if audio_bytes:
+                st.success("Audio recorded! Transcribing...")
+                try:
+                    transcript = transcribe_audio(audio_bytes)
+                    st.session_state.current_transcript = transcript
+                    st.write(f"**Transcribed:** {transcript}")
+                except Exception as e:
+                    st.error(f"Error transcribing audio: {str(e)}")
+                    st.session_state.current_transcript = ""
         
         # Text area for editing transcription or typing response
         user_answer = st.text_area(
@@ -297,12 +323,13 @@ def main():
                 st.session_state.conversation.append({"role": "assistant", "content": ai_response})
                 st.session_state.current_question = ai_response
                 
-                # Generate speech for the AI response
-                try:
-                    st.session_state.current_audio = text_to_speech(ai_response)
-                except Exception as e:
-                    st.warning(f"Unable to generate speech: {e}")
-                    st.session_state.current_audio = None
+                # Generate speech for the AI response if credentials are available
+                if credentials is not None:
+                    try:
+                        st.session_state.current_audio = text_to_speech(ai_response)
+                    except Exception as e:
+                        st.warning(f"Unable to generate speech: {e}")
+                        st.session_state.current_audio = None
                 
                 # Clear the current transcript
                 st.session_state.current_transcript = ""
