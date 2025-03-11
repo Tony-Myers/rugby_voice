@@ -55,14 +55,18 @@ interview_topics = [
 total_questions = len(interview_topics)
 
 # --- Setup Google Cloud credentials ---
+credentials = None
 if "google_credentials" in st.secrets:
-    # Get credentials from secrets
-    credentials = service_account.Credentials.from_service_account_info(
-        st.secrets["google_credentials"]
-    )
-else:
-    # No credentials in secrets
-    credentials = None
+    try:
+        # Get credentials from secrets
+        credentials = service_account.Credentials.from_service_account_info(
+            st.secrets["google_credentials"]
+        )
+        st.success("Google Cloud credentials loaded successfully. Voice features are available.")
+    except Exception as e:
+        st.warning(f"Error loading Google Cloud credentials. Voice features will not be available.")
+        # Print more detailed error for debugging (only visible in logs)
+        print(f"Credential error details: {str(e)}")
 
 def generate_response(prompt, conversation_history=None):
     try:
@@ -137,8 +141,8 @@ def send_email(transcript_md):
 def transcribe_audio(audio_bytes):
     # Check if credentials are available
     if credentials is None:
-        st.error("Google Cloud credentials not configured")
-        return "Speech-to-text unavailable. Please type your response."
+        st.warning("Speech-to-text unavailable. Please type your response instead.")
+        return "Voice transcription unavailable. Please type your response."
     
     # Save audio bytes to a temporary file
     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
@@ -286,6 +290,9 @@ def main():
                 except Exception as e:
                     st.error(f"Error transcribing audio: {str(e)}")
                     st.session_state.current_transcript = ""
+        else:
+            st.info("Voice recording is not available. Please type your response below.")
+            st.session_state.current_transcript = ""
         
         # Text area for editing transcription or typing response
         user_answer = st.text_area(
