@@ -227,11 +227,11 @@ def text_to_speech(text):
         # Set up the input text
         synthesis_input = texttospeech.SynthesisInput(text=text)
         
-        # Configure the voice
+        # Configure the voice - USING MALE GENDER INSTEAD OF NEUTRAL
         voice = texttospeech.VoiceSelectionParams(
             language_code="en-GB",
-            name="en-GB-Neural2-B",  # A neutral British voice
-            ssml_gender=texttospeech.SsmlVoiceGender.NEUTRAL
+            name="en-GB-Neural2-B",  # A British voice
+            ssml_gender=texttospeech.SsmlVoiceGender.MALE  # Changed from NEUTRAL to MALE
         )
         
         # Configure the audio output
