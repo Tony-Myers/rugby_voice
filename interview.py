@@ -186,6 +186,27 @@ def transcribe_audio(audio_bytes):
         # Create speech client
         client = speech.SpeechClient(credentials=credentials)
         
+        # Convert audio to mono if needed (requires installing soundfile)
+        try:
+            import soundfile as sf
+            
+            # Read the audio file
+            data, samplerate = sf.read(tmp_file_path)
+            
+            # Check if it's stereo and convert to mono if needed
+            if len(data.shape) > 1 and data.shape[1] > 1:
+                st.info("Converting stereo audio to mono...")
+                mono_data = data.mean(axis=1)
+                
+                # Create a new temporary file for the mono audio
+                mono_tmp_file = tmp_file_path.replace(".wav", "_mono.wav")
+                sf.write(mono_tmp_file, mono_data, samplerate, subtype='PCM_16')
+                
+                # Use the mono file instead
+                tmp_file_path = mono_tmp_file
+        except ImportError:
+            st.warning("soundfile library not available. Audio may not be properly processed.")
+        
         # Load the audio file
         with open(tmp_file_path, "rb") as audio_file:
             content = audio_file.read()
@@ -196,6 +217,8 @@ def transcribe_audio(audio_bytes):
             encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
             sample_rate_hertz=48000,  # Adjust if needed based on recording parameters
             language_code="en-GB",
+            # Explicitly set to 1 channel (mono)
+            audio_channel_count=1
         )
         
         # Perform speech recognition
@@ -211,9 +234,14 @@ def transcribe_audio(audio_bytes):
         st.error(f"Error in speech recognition: {e}")
         return f"Error: {str(e)}"
     finally:
-        # Delete the temporary file
+        # Delete the temporary files
         if os.path.exists(tmp_file_path):
             os.unlink(tmp_file_path)
+        
+        # Also delete the mono version if it exists
+        mono_path = tmp_file_path.replace(".wav", "_mono.wav")
+        if os.path.exists(mono_path):
+            os.unlink(mono_path)
 
 def text_to_speech(text):
     # Check if credentials are available
@@ -227,27 +255,53 @@ def text_to_speech(text):
         # Set up the input text
         synthesis_input = texttospeech.SynthesisInput(text=text)
         
-        # Configure the voice - USING MALE GENDER INSTEAD OF NEUTRAL
-        voice = texttospeech.VoiceSelectionParams(
-            language_code="en-GB",
-            name="en-GB-Neural2-B",  # A British voice
-            ssml_gender=texttospeech.SsmlVoiceGender.MALE  # Changed from NEUTRAL to MALE
-        )
-        
-        # Configure the audio output
-        audio_config = texttospeech.AudioConfig(
-            audio_encoding=texttospeech.AudioEncoding.MP3
-        )
-        
-        # Generate the speech
-        response = client.synthesize_speech(
-            input=synthesis_input,
-            voice=voice,
-            audio_config=audio_config
-        )
-        
-        # Return the audio content
-        return response.audio_content
+        # Try different voice configurations
+        # First try with a standard voice (without gender specification)
+        try:
+            voice = texttospeech.VoiceSelectionParams(
+                language_code="en-GB",
+                name="en-GB-Standard-B"  # Standard voice
+            )
+            
+            # Configure the audio output
+            audio_config = texttospeech.AudioConfig(
+                audio_encoding=texttospeech.AudioEncoding.MP3
+            )
+            
+            # Generate the speech
+            response = client.synthesize_speech(
+                input=synthesis_input,
+                voice=voice,
+                audio_config=audio_config
+            )
+            
+            # Return the audio content
+            return response.audio_content
+            
+        except Exception as voice_error:
+            # If the standard voice fails, try with explicit MALE gender
+            st.warning(f"First voice attempt failed: {voice_error}. Trying alternate voice...")
+            
+            voice = texttospeech.VoiceSelectionParams(
+                language_code="en-GB",
+                ssml_gender=texttospeech.SsmlVoiceGender.MALE
+            )
+            
+            # Configure the audio output
+            audio_config = texttospeech.AudioConfig(
+                audio_encoding=texttospeech.AudioEncoding.MP3
+            )
+            
+            # Generate the speech
+            response = client.synthesize_speech(
+                input=synthesis_input,
+                voice=voice,
+                audio_config=audio_config
+            )
+            
+            # Return the audio content
+            return response.audio_content
+            
     except Exception as e:
         st.error(f"Error in text-to-speech: {e}")
         return None
@@ -285,8 +339,13 @@ def main():
         if credentials is not None:
             try:
                 st.session_state.current_audio = text_to_speech(st.session_state.current_question)
+                # Debug message for initial audio generation
+                if st.session_state.current_audio:
+                    st.success("Initial question audio generated successfully.")
+                else:
+                    st.warning("Failed to generate audio for initial question.")
             except Exception as e:
-                st.warning(f"Unable to generate speech: {e}")
+                st.warning(f"Unable to generate speech for initial question: {e}")
                 st.session_state.current_audio = None
 
     st.write("""
@@ -307,6 +366,27 @@ def main():
         # Play audio of current question if available
         if "current_audio" in st.session_state and st.session_state.current_audio:
             st.audio(st.session_state.current_audio, format="audio/mp3")
+            # Add a debug button to regenerate audio if needed
+            if st.button("Regenerate Question Audio"):
+                try:
+                    st.session_state.current_audio = text_to_speech(st.session_state.current_question)
+                    st.success("Audio regenerated successfully.")
+                    st.experimental_rerun()
+                except Exception as e:
+                    st.error(f"Error regenerating audio: {e}")
+        else:
+            # If audio is not available, show a message and option to generate it
+            st.warning("Audio for this question is not available.")
+            if st.button("Generate Audio for Question"):
+                try:
+                    st.session_state.current_audio = text_to_speech(st.session_state.current_question)
+                    if st.session_state.current_audio:
+                        st.success("Audio generated successfully.")
+                        st.experimental_rerun()
+                    else:
+                        st.error("Failed to generate audio.")
+                except Exception as e:
+                    st.error(f"Error generating audio: {e}")
         
         # Voice recording section (only if Google credentials are available)
         if credentials is not None:
@@ -367,6 +447,8 @@ def main():
                 if credentials is not None:
                     try:
                         st.session_state.current_audio = text_to_speech(ai_response)
+                        if not st.session_state.current_audio:
+                            st.warning("Failed to generate audio for the response.")
                     except Exception as e:
                         st.warning(f"Unable to generate speech: {e}")
                         st.session_state.current_audio = None
