@@ -9,6 +9,7 @@ from email.mime.multipart import MIMEMultipart
 import tempfile
 import os
 import json
+import re
 
 # For speech recognition and TTS
 from google.cloud import speech_v1 as speech
@@ -55,6 +56,16 @@ interview_topics = [
 ]
 total_questions = len(interview_topics)
 
+def clean_json_string(json_str):
+    """Clean a JSON string that may contain invalid control characters"""
+    # Replace literal \n with actual newlines (helps with private key formatting)
+    json_str = json_str.replace("\\n", "\n")
+    
+    # Remove any non-printable characters except valid whitespace
+    json_str = re.sub(r'[\x00-\x09\x0b\x0c\x0e-\x1f\x7f]', '', json_str)
+    
+    return json_str
+
 # --- Setup Google Cloud credentials ---
 credentials = None
 if "google_credentials" in st.secrets:
@@ -62,30 +73,22 @@ if "google_credentials" in st.secrets:
         # Get credentials string from secrets
         creds_raw = st.secrets["google_credentials"]
         
-        # Clean up the string if needed (remove extra quotes, fix escaping)
+        # Clean up the string if needed
         if isinstance(creds_raw, str):
-            # Strip any surrounding quotes if present
-            creds_raw = creds_raw.strip('"\'')
+            # Clean the JSON string to remove invalid control characters
+            creds_raw = clean_json_string(creds_raw)
             
-            # Try to parse the JSON
+            # Try to parse the cleaned JSON
             try:
                 creds_dict = json.loads(creds_raw)
                 
-                # Particularly check for and fix private_key formatting
-                if "private_key" in creds_dict and isinstance(creds_dict["private_key"], str):
-                    # Ensure private key has proper newlines
-                    if "\\n" in creds_dict["private_key"] and "\n" not in creds_dict["private_key"]:
-                        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-                
-                # Create credentials from the parsed and fixed dictionary
+                # Create credentials from the parsed dictionary
                 credentials = service_account.Credentials.from_service_account_info(creds_dict)
                 st.success("Google Cloud credentials loaded successfully. Voice features are available.")
                 
             except json.JSONDecodeError as json_err:
                 st.error(f"Invalid JSON format in google_credentials: {str(json_err)}")
-                # Log the first few characters for debugging (avoid logging entire credential)
-                if len(creds_raw) > 20:
-                    print(f"First 20 chars of credentials: {creds_raw[:20]}...")
+                # Log some debug info without exposing the full credentials
                 print(f"JSON parse error: {str(json_err)}")
         else:
             # If it's already a dictionary structure
