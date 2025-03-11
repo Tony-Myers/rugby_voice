@@ -382,7 +382,7 @@ def main():
                     st.session_state.current_audio = text_to_speech(st.session_state.current_question)
                     if st.session_state.current_audio:
                         st.success("Audio generated successfully.")
-                        st.experimental_rerun()
+                        st.rerun()
                     else:
                         st.error("Failed to generate audio.")
                 except Exception as e:
@@ -456,7 +456,7 @@ def main():
                 # Clear the current transcript
                 st.session_state.current_transcript = ""
                 
-                st.experimental_rerun()
+                st.rerun()
             else:
                 st.warning("Please provide an answer before submitting.")
 
@@ -484,7 +484,7 @@ def main():
         if st.button("Restart Interview"):
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
-            st.experimental_rerun()
+            st.rerun()
 
 if __name__ == "__main__":
     main()
