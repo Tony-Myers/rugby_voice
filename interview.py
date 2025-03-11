@@ -8,6 +8,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import tempfile
 import os
+import json
 
 # For speech recognition and TTS
 from google.cloud import speech_v1 as speech
@@ -58,14 +59,43 @@ total_questions = len(interview_topics)
 credentials = None
 if "google_credentials" in st.secrets:
     try:
-        # Get credentials from secrets
-        credentials = service_account.Credentials.from_service_account_info(
-            st.secrets["google_credentials"]
-        )
-        st.success("Google Cloud credentials loaded successfully. Voice features are available.")
+        # Get credentials string from secrets
+        creds_raw = st.secrets["google_credentials"]
+        
+        # Clean up the string if needed (remove extra quotes, fix escaping)
+        if isinstance(creds_raw, str):
+            # Strip any surrounding quotes if present
+            creds_raw = creds_raw.strip('"\'')
+            
+            # Try to parse the JSON
+            try:
+                creds_dict = json.loads(creds_raw)
+                
+                # Particularly check for and fix private_key formatting
+                if "private_key" in creds_dict and isinstance(creds_dict["private_key"], str):
+                    # Ensure private key has proper newlines
+                    if "\\n" in creds_dict["private_key"] and "\n" not in creds_dict["private_key"]:
+                        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+                
+                # Create credentials from the parsed and fixed dictionary
+                credentials = service_account.Credentials.from_service_account_info(creds_dict)
+                st.success("Google Cloud credentials loaded successfully. Voice features are available.")
+                
+            except json.JSONDecodeError as json_err:
+                st.error(f"Invalid JSON format in google_credentials: {str(json_err)}")
+                # Log the first few characters for debugging (avoid logging entire credential)
+                if len(creds_raw) > 20:
+                    print(f"First 20 chars of credentials: {creds_raw[:20]}...")
+                print(f"JSON parse error: {str(json_err)}")
+        else:
+            # If it's already a dictionary structure
+            credentials = service_account.Credentials.from_service_account_info(creds_raw)
+            st.success("Google Cloud credentials loaded successfully. Voice features are available.")
+            
     except Exception as e:
-        st.warning(f"Error loading Google Cloud credentials. Voice features will not be available.")
-        # Print more detailed error for debugging (only visible in logs)
+        st.warning(f"Error loading Google Cloud credentials: {type(e).__name__}")
+        # Print error details for debugging in logs
+        print(f"Credential error type: {type(e).__name__}")
         print(f"Credential error details: {str(e)}")
 
 def generate_response(prompt, conversation_history=None):
