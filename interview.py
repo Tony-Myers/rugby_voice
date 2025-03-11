@@ -186,62 +186,66 @@ def transcribe_audio(audio_bytes):
         # Create speech client
         client = speech.SpeechClient(credentials=credentials)
         
-        # Convert audio to mono if needed (requires installing soundfile)
-        try:
-            import soundfile as sf
-            
-            # Read the audio file
-            data, samplerate = sf.read(tmp_file_path)
-            
-            # Check if it's stereo and convert to mono if needed
-            if len(data.shape) > 1 and data.shape[1] > 1:
-                st.info("Converting stereo audio to mono...")
-                mono_data = data.mean(axis=1)
-                
-                # Create a new temporary file for the mono audio
-                mono_tmp_file = tmp_file_path.replace(".wav", "_mono.wav")
-                sf.write(mono_tmp_file, mono_data, samplerate, subtype='PCM_16')
-                
-                # Use the mono file instead
-                tmp_file_path = mono_tmp_file
-        except ImportError:
-            st.warning("soundfile library not available. Audio may not be properly processed.")
-        
         # Load the audio file
         with open(tmp_file_path, "rb") as audio_file:
             content = audio_file.read()
         
-        # Configure the speech recognition request
-        audio = speech.RecognitionAudio(content=content)
-        config = speech.RecognitionConfig(
-            encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
-            sample_rate_hertz=48000,  # Adjust if needed based on recording parameters
-            language_code="en-GB",
-            # Explicitly set to 1 channel (mono)
-            audio_channel_count=1
-        )
+        # Try with different configuration options to handle stereo audio
+        # First try telling the API to use the first channel of stereo audio
+        try:
+            audio = speech.RecognitionAudio(content=content)
+            config = speech.RecognitionConfig(
+                encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+                sample_rate_hertz=48000,
+                language_code="en-GB",
+                # Use only the first channel of stereo audio
+                audio_channel_count=2,
+                enable_separate_recognition_per_channel=True
+            )
+            
+            response = client.recognize(config=config, audio=audio)
+            
+            # Extract and return the transcript
+            transcript = ""
+            for result in response.results:
+                transcript += result.alternatives[0].transcript
+            
+            if transcript:
+                return transcript
+                
+        except Exception as first_attempt_error:
+            # Log the error but continue to the second attempt
+            print(f"First transcription attempt failed: {str(first_attempt_error)}")
         
-        # Perform speech recognition
-        response = client.recognize(config=config, audio=audio)
-        
-        # Extract and return the transcript
-        transcript = ""
-        for result in response.results:
-            transcript += result.alternatives[0].transcript
-        
-        return transcript
+        # Second attempt: try with RAW encoding which might handle stereo better
+        try:
+            audio = speech.RecognitionAudio(content=content)
+            config = speech.RecognitionConfig(
+                encoding=speech.RecognitionConfig.AudioEncoding.ENCODING_UNSPECIFIED,  # Let API detect
+                sample_rate_hertz=48000,
+                language_code="en-GB"
+            )
+            
+            response = client.recognize(config=config, audio=audio)
+            
+            # Extract and return the transcript
+            transcript = ""
+            for result in response.results:
+                transcript += result.alternatives[0].transcript
+            
+            return transcript
+            
+        except Exception as second_attempt_error:
+            # Both attempts failed
+            raise Exception(f"Multiple transcription attempts failed. Last error: {str(second_attempt_error)}")
+            
     except Exception as e:
         st.error(f"Error in speech recognition: {e}")
         return f"Error: {str(e)}"
     finally:
-        # Delete the temporary files
+        # Delete the temporary file
         if os.path.exists(tmp_file_path):
             os.unlink(tmp_file_path)
-        
-        # Also delete the mono version if it exists
-        mono_path = tmp_file_path.replace(".wav", "_mono.wav")
-        if os.path.exists(mono_path):
-            os.unlink(mono_path)
 
 def text_to_speech(text):
     # Check if credentials are available
@@ -382,7 +386,7 @@ def main():
                     st.session_state.current_audio = text_to_speech(st.session_state.current_question)
                     if st.session_state.current_audio:
                         st.success("Audio generated successfully.")
-                        st.rerun()
+                        st.experimental_rerun()
                     else:
                         st.error("Failed to generate audio.")
                 except Exception as e:
@@ -392,6 +396,9 @@ def main():
         if credentials is not None:
             st.write("**Speak your answer:**")
             audio_bytes = audio_recorder()
+            
+            # Display warning about possible voice recognition issues
+            st.warning("Note: Voice recognition may not work perfectly. If your response isn't properly transcribed, please type it directly in the text box below.")
             
             # Process recorded audio
             if audio_bytes:
