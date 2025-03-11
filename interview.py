@@ -371,7 +371,7 @@ def main():
                 try:
                     st.session_state.current_audio = text_to_speech(st.session_state.current_question)
                     st.success("Audio regenerated successfully.")
-                    st.experimental_rerun()
+                    st.rerun()
                 except Exception as e:
                     st.error(f"Error regenerating audio: {e}")
         else:
