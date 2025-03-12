@@ -19,7 +19,11 @@ from google.oauth2 import service_account
 # For audio recording
 from audio_recorder_streamlit import audio_recorder
 
-# NEW IMPORT: pydub for audio conversion
+# NEW: Suppress pydub “invalid escape sequence” warnings (optional)
+import warnings
+warnings.filterwarnings("ignore", message=".*invalid escape sequence.*", category=SyntaxWarning)
+
+# NEW: pydub for audio conversion
 from pydub import AudioSegment
 
 # --- Retrieve secrets (with fallback to None) ---
@@ -186,7 +190,7 @@ def transcribe_audio(audio_bytes):
         tmp_file_path = tmp_file.name
     
     try:
-        # NEW: Convert the file to mono using pydub
+        # Convert the file to mono using pydub
         try:
             sound = AudioSegment.from_file(tmp_file_path, format="wav")
             sound_mono = sound.set_channels(1)
@@ -251,9 +255,11 @@ def transcribe_audio(audio_bytes):
         if os.path.exists(tmp_file_path):
             os.unlink(tmp_file_path)
 
+
 def text_to_speech(text):
-    # Check if credentials are available
+    """Use Google TTS to generate an MP3 audio response with a known UK voice."""
     if credentials is None:
+        # No credentials, skip TTS
         return None
     
     try:
@@ -263,54 +269,28 @@ def text_to_speech(text):
         # Set up the input text
         synthesis_input = texttospeech.SynthesisInput(text=text)
         
-        # Try different voice configurations
-        # First try with a standard voice (without gender specification)
-        try:
-            voice = texttospeech.VoiceSelectionParams(
-                language_code="en-GB",
-                name="en-GB-Standard-B"  # Standard voice
-            )
-            
-            # Configure the audio output
-            audio_config = texttospeech.AudioConfig(
-                audio_encoding=texttospeech.AudioEncoding.MP3
-            )
-            
-            # Generate the speech
-            response = client.synthesize_speech(
-                input=synthesis_input,
-                voice=voice,
-                audio_config=audio_config
-            )
-            
-            # Return the audio content
-            return response.audio_content
-            
-        except Exception as voice_error:
-            # If the standard voice fails, try with explicit MALE gender
-            st.warning(f"First voice attempt failed: {voice_error}. Trying alternate voice...")
-            
-            voice = texttospeech.VoiceSelectionParams(
-                language_code="en-GB",
-                ssml_gender=texttospeech.SsmlVoiceGender.MALE
-            )
-            
-            # Configure the audio output
-            audio_config = texttospeech.AudioConfig(
-                audio_encoding=texttospeech.AudioEncoding.MP3
-            )
-            
-            # Generate the speech
-            response = client.synthesize_speech(
-                input=synthesis_input,
-                voice=voice,
-                audio_config=audio_config
-            )
-            
-            # Return the audio content
-            return response.audio_content
-            
+        # Use a standard British English voice that most accounts should have
+        voice = texttospeech.VoiceSelectionParams(
+            language_code="en-GB",
+            ssml_gender=texttospeech.SsmlVoiceGender.NEUTRAL
+        )
+        
+        # Configure the audio output as MP3
+        audio_config = texttospeech.AudioConfig(
+            audio_encoding=texttospeech.AudioEncoding.MP3
+        )
+        
+        # Generate the speech
+        response = client.synthesize_speech(
+            input=synthesis_input,
+            voice=voice,
+            audio_config=audio_config
+        )
+        
+        return response.audio_content
+    
     except Exception as e:
+        # If TTS fails, show an error in the Streamlit app
         st.error(f"Error in text-to-speech: {e}")
         return None
 
@@ -343,15 +323,14 @@ def main():
             "Thank you for agreeing to speak with us about your recent rugby taster session. "
             "To begin, can you tell me a bit about yourself and any previous experience with rugby or other sports?"
         )
-        # Convert initial question to speech
+        # Generate TTS for the initial question
         if credentials is not None:
             try:
                 st.session_state.current_audio = text_to_speech(st.session_state.current_question)
-                # Debug message for initial audio generation
                 if st.session_state.current_audio:
                     st.success("Initial question audio generated successfully.")
                 else:
-                    st.warning("Failed to generate audio for initial question.")
+                    st.warning("Failed to generate audio for the initial question.")
             except Exception as e:
                 st.warning(f"Unable to generate speech for initial question: {e}")
                 st.session_state.current_audio = None
@@ -374,7 +353,7 @@ def main():
         # Play audio of current question if available
         if "current_audio" in st.session_state and st.session_state.current_audio:
             st.audio(st.session_state.current_audio, format="audio/mp3")
-            # Add a debug button to regenerate audio if needed
+            # Button to regenerate question audio if needed
             if st.button("Regenerate Question Audio"):
                 try:
                     st.session_state.current_audio = text_to_speech(st.session_state.current_question)
@@ -401,10 +380,11 @@ def main():
             st.write("**Speak your answer:**")
             audio_bytes = audio_recorder()
             
-            # Display warning about possible voice recognition issues
-            st.warning("Note: Voice recognition may not work perfectly. If your response isn't properly transcribed, please type it directly in the text box below.")
+            st.warning(
+                "Note: Voice recognition may not be perfect. "
+                "If your response isn't properly transcribed, please type it directly below."
+            )
             
-            # Process recorded audio
             if audio_bytes:
                 st.success("Audio recorded! Transcribing...")
                 try:
@@ -454,7 +434,7 @@ def main():
                 st.session_state.conversation.append({"role": "assistant", "content": ai_response})
                 st.session_state.current_question = ai_response
                 
-                # Generate speech for the AI response if credentials are available
+                # Generate TTS for the AI response if credentials are available
                 if credentials is not None:
                     try:
                         st.session_state.current_audio = text_to_speech(ai_response)
