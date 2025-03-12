@@ -228,6 +228,20 @@ def get_audio_download_link(audio_bytes, mime_type, filename="audio.mp3"):
     href = f'<a href="data:{mime_type};base64,{b64}" download="{filename}">Download Audio</a>'
     return href
 
+def get_autoplay_audio_html(audio_bytes, mime_type):
+    """Create an HTML audio element with autoplay enabled."""
+    if audio_bytes is None:
+        return ""
+    
+    b64 = base64.b64encode(audio_bytes).decode()
+    audio_src = f"data:{mime_type};base64,{b64}"
+    return f"""
+    <audio autoplay="true" controls>
+        <source src="{audio_src}" type="{mime_type}">
+        Your browser does not support the audio element.
+    </audio>
+    """
+
 def send_email(transcript_md):
     subject = "Interview Transcript"
     body = "Please find attached the interview transcript."
@@ -255,6 +269,47 @@ def send_email(transcript_md):
     except Exception as e:
         st.error(f"Error sending email: {str(e)}")
         return False
+
+def combine_audio_segments(audio_files):
+    """Combine multiple audio files into a single audio segment."""
+    if not audio_files:
+        return None
+    
+    if len(audio_files) == 1:
+        return audio_files[0]
+    
+    try:
+        # Create temporary files for each audio chunk
+        temp_files = []
+        for i, audio in enumerate(audio_files):
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+                tmp.write(audio)
+                temp_files.append(tmp.name)
+        
+        # Combine the audio segments
+        combined = AudioSegment.from_file(temp_files[0], format="wav")
+        for temp_file in temp_files[1:]:
+            segment = AudioSegment.from_file(temp_file, format="wav")
+            combined += segment
+        
+        # Export to a new temporary file
+        output_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+        combined.export(output_file.name, format="wav")
+        
+        # Read the combined audio
+        with open(output_file.name, "rb") as f:
+            combined_audio = f.read()
+        
+        # Clean up temporary files
+        for file in temp_files + [output_file.name]:
+            if os.path.exists(file):
+                os.unlink(file)
+                
+        return combined_audio
+    except Exception as e:
+        print(f"Error combining audio segments: {e}")
+        # Fallback to the first audio file if combination fails
+        return audio_files[0]
 
 def transcribe_audio(audio_bytes):
     """Enhanced voice transcription with multiple fallback methods."""
@@ -308,6 +363,10 @@ def transcribe_audio(audio_bytes):
                             encoding=encoding,
                             sample_rate_hertz=rate,
                             language_code="en-GB",
+                            # Add settings for better transcription of longer audio
+                            enable_automatic_punctuation=True,
+                            model="default",
+                            use_enhanced=True  # Use enhanced model
                         )
                         
                         try:
@@ -335,6 +394,9 @@ def transcribe_audio(audio_bytes):
             config = speech.RecognitionConfig(
                 encoding=speech.RecognitionConfig.AudioEncoding.ENCODING_UNSPECIFIED,
                 language_code="en-GB",
+                enable_automatic_punctuation=True,
+                model="default",
+                use_enhanced=True
             )
             
             response = client.recognize(config=config, audio=audio)
@@ -362,6 +424,9 @@ def transcribe_audio(audio_bytes):
                 encoding=speech.RecognitionConfig.AudioEncoding.ENCODING_UNSPECIFIED,
                 language_code="en-GB",
                 audio_channel_count=1,
+                enable_automatic_punctuation=True,
+                model="default",
+                use_enhanced=True
             )
             
             response = client.recognize(config=config, audio=audio)
@@ -653,7 +718,14 @@ def main():
     if st.button("Test Voice Recognition"):
         if credentials:
             st.write("Please speak into your microphone:")
-            test_audio_bytes = audio_recorder()
+            test_audio_bytes = audio_recorder(
+                pause_threshold=2.0,  # Longer pause threshold before stopping
+                recording_color="#FF
+            test_audio_bytes = audio_recorder(
+                pause_threshold=2.0,  # Longer pause threshold before stopping
+                recording_color="#FF5733",  # More visible recording color
+                neutral_color="#6aa36f"
+            )
             if test_audio_bytes:
                 st.success("Audio recorded!")
                 
@@ -734,6 +806,12 @@ def main():
                 st.session_state.current_audio = None
                 st.session_state.current_audio_mime = None
 
+    # Initialize session state for recording management
+    if "current_recordings" not in st.session_state:
+        st.session_state.current_recordings = []
+    if "show_recordings_ui" not in st.session_state:
+        st.session_state.show_recordings_ui = False
+    
     st.write("""
     **Information Sheet and Consent**  
     By ticking yes below, you consent to participate in this interview about your experience in a rugby taster session. 
@@ -748,14 +826,29 @@ def main():
         # Display current question
         st.markdown(f"**AI Question:** {st.session_state.current_question}")
         
-        # If we have TTS audio, show it
+        # If we have TTS audio, show it with autoplay option
         if "current_audio" in st.session_state and st.session_state.current_audio:
             mime_type = st.session_state.get("current_audio_mime", "audio/wav")
-            st.caption(f"(Audio length = {len(st.session_state.current_audio)} bytes)")
+            st.caption(f"(Audio question will play automatically. Length = {len(st.session_state.current_audio)} bytes)")
             
-            # Display audio with multiple methods
-            st.audio(st.session_state.current_audio, format=mime_type)
-            st.markdown(get_audio_download_link(st.session_state.current_audio, mime_type, "question_audio.wav"), unsafe_allow_html=True)
+            # Create columns for better layout
+            col1, col2 = st.columns([3, 1])
+            
+            with col1:
+                # Try to use autoplay
+                st.markdown(get_autoplay_audio_html(st.session_state.current_audio, mime_type), unsafe_allow_html=True)
+                
+                # Also provide standard audio player as fallback
+                st.audio(st.session_state.current_audio, format=mime_type)
+            
+            with col2:
+                # Download link
+                st.markdown(get_audio_download_link(st.session_state.current_audio, mime_type, "question_audio.wav"), unsafe_allow_html=True)
+                
+                # Explicit play button (more obvious)
+                if st.button("🔊 Play Question"):
+                    # This forces a rerun which helps with autoplay
+                    st.rerun()
             
             if st.button("Regenerate Question Audio"):
                 try:
@@ -786,25 +879,53 @@ def main():
                 except Exception as e:
                     st.error(f"Error generating audio: {e}")
         
+        # Improved voice recording section with concatenation support
         if credentials is not None:
+            st.write("---")
             st.write("**Speak your answer:**")
-            audio_bytes = audio_recorder()
-            st.warning("Note: Voice recognition may not be perfect. If your response is off, please type below.")
+            st.write("Continue speaking until you've completed your answer. If recording stops, you can click record again to continue.")
+            
+            # Display recording count
+            if st.session_state.current_recordings:
+                st.write(f"**{len(st.session_state.current_recordings)} recording(s) captured so far**")
+            
+            # Record audio with better parameters
+            audio_bytes = audio_recorder(
+                pause_threshold=2.0,  # Longer pause threshold before stopping
+                recording_color="#FF5733",  # More visible recording color
+                neutral_color="#6aa36f",
+                energy_threshold=0.01,  # Lower threshold to detect quieter speech
+            )
+            
             if audio_bytes:
-                st.success("Audio recorded!")
+                # Store the new recording
+                st.session_state.current_recordings.append(audio_bytes)
+                st.success(f"Recording {len(st.session_state.current_recordings)} captured! You can continue recording if needed.")
+                st.session_state.show_recordings_ui = True
+                st.rerun()  # Refresh to show the updated UI
+            
+            # Show UI for managing recordings
+            if st.session_state.show_recordings_ui and st.session_state.current_recordings:
+                if st.button("Process All Recordings"):
+                    with st.spinner("Combining recordings and transcribing..."):
+                        # Combine all recordings
+                        combined_audio = combine_audio_segments(st.session_state.current_recordings)
+                        
+                        # Show download link for debugging
+                        st.write("Download the combined recording for troubleshooting:")
+                        st.markdown(get_audio_download_link(combined_audio, "audio/wav", "combined_recording.wav"), unsafe_allow_html=True)
+                        
+                        # Transcribe the combined audio
+                        transcript = transcribe_audio(combined_audio)
+                        st.session_state.current_transcript = transcript
+                        st.write(f"**Transcribed:** {transcript}")
                 
-                # Add download link for the audio file for debugging
-                st.write("Download the recorded audio for troubleshooting:")
-                st.markdown(get_audio_download_link(audio_bytes, "audio/wav", "recorded_audio.wav"), unsafe_allow_html=True)
-                
-                st.write("Transcribing...")
-                try:
-                    transcript = transcribe_audio(audio_bytes)
-                    st.session_state.current_transcript = transcript
-                    st.write(f"**Transcribed:** {transcript}")
-                except Exception as e:
-                    st.error(f"Error transcribing audio: {str(e)}")
+                # Clear recordings button
+                if st.button("Clear recordings and start over"):
+                    st.session_state.current_recordings = []
                     st.session_state.current_transcript = ""
+                    st.session_state.show_recordings_ui = False
+                    st.rerun()
         else:
             st.info("Voice recording not available (no credentials). Please type your response below.")
             st.session_state.current_transcript = ""
@@ -859,7 +980,11 @@ def main():
                         st.session_state.current_audio = None
                         st.session_state.current_audio_mime = None
                 
+                # Reset recording state for next question
                 st.session_state.current_transcript = ""
+                st.session_state.current_recordings = []
+                st.session_state.show_recordings_ui = False
+                
                 st.rerun()
             else:
                 st.warning("Please provide an answer before submitting.")
