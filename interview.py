@@ -72,7 +72,8 @@ def clean_json_string(json_str):
     json_str = re.sub(r'[\x00-\x09\x0b\x0c\x0e-\x1f\x7f]', '', json_str)
     
     return json_str
-    # --- Setup Google Cloud credentials ---
+
+# --- Setup Google Cloud credentials ---
 credentials = None
 if "google_credentials" in st.secrets:
     try:
@@ -254,7 +255,8 @@ def send_email(transcript_md):
     except Exception as e:
         st.error(f"Error sending email: {str(e)}")
         return False
-        def transcribe_audio(audio_bytes):
+
+def transcribe_audio(audio_bytes):
     if credentials is None:
         st.warning("Speech-to-text unavailable. Please type your response instead.")
         return "Voice transcription unavailable. Please type your response."
@@ -480,7 +482,8 @@ def try_all_tts_voices():
         error_message = f"Error testing voices: {type(e).__name__}: {str(e)}"
         print(error_message)
         return error_message, None, None
-        def main():
+
+def main():
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
 
@@ -643,11 +646,6 @@ def try_all_tts_voices():
     By ticking yes below, you consent to participate in this interview about your experience in a rugby taster session. 
     Your responses may be anonymously quoted in publications. You may end the interview at any time and request 
     your data be removed by emailing tony.myers@staff.newman.ac.uk. 
-    An AI assistant will ask main questions anst.write("""
-    **Information Sheet and Consent**  
-    By ticking yes below, you consent to participate in this interview about your experience in a rugby taster session. 
-    Your responses may be anonymously quoted in publications. You may end the interview at any time and request 
-    your data be removed by emailing tony.myers@staff.newman.ac.uk. 
     An AI assistant will ask main questions and follow-up probing questions.
     """)
 
@@ -694,7 +692,8 @@ def try_all_tts_voices():
                         st.error(f"Failed to generate audio (0 bytes). {dbg}")
                 except Exception as e:
                     st.error(f"Error generating audio: {e}")
-                    if credentials is not None:
+        
+        if credentials is not None:
             st.write("**Speak your answer:**")
             audio_bytes = audio_recorder()
             st.warning("Note: Voice recognition may not be perfect. If your response is off, please type below.")
@@ -789,3 +788,4 @@ def try_all_tts_voices():
 
 if __name__ == "__main__":
     main()
+    
