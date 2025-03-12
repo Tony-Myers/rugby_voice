@@ -227,11 +227,7 @@ def transcribe_audio(audio_bytes):
         if os.path.exists(tmp_file_path):
             os.unlink(tmp_file_path)
 
-def debug_print_tts(audio_content, label="TTS"):
-    """
-    Utility to print out size of the TTS result and return
-    a short string for UI usage.
-    """
+def debug_print_tts(audio_content, label="TTS debug"):
     if audio_content is None:
         print(f"{label}: No audio returned (None).")
         return "0 bytes (No audio data)"
@@ -246,10 +242,10 @@ def text_to_speech(text):
     
     tts_client = texttospeech.TextToSpeechClient(credentials=credentials)
     
-    # Try a Wavenet voice first (fancier, sometimes not available on all accounts)
+    # Try a Wavenet voice first
     first_choice = texttospeech.VoiceSelectionParams(
         language_code="en-GB",
-        name="en-GB-Wavenet-A",  
+        name="en-GB-Wavenet-A",
         ssml_gender=texttospeech.SsmlVoiceGender.NEUTRAL
     )
     # Fallback standard voice
@@ -270,22 +266,25 @@ def text_to_speech(text):
             audio_config=audio_config
         )
         if response.audio_content:
+            print("TTS: Successfully used Wavenet voice.")
             return response.audio_content
-        # If we get empty content, attempt fallback
-        st.warning("TTS returned empty audio content with Wavenet voice. Attempting fallback Standard voice.")
+        st.warning("TTS returned empty audio content with Wavenet voice. Attempting fallback.")
     except Exception as e:
-        st.warning(f"TTS (Wavenet) error: {e}. Trying fallback voice now.")
+        st.warning(f"TTS Wavenet error: {e}, attempting fallback voice.")
     
-    # Attempt #2: fallback
+    # Attempt #2
     try:
         response = tts_client.synthesize_speech(
             input=synthesis_input,
             voice=fallback_choice,
             audio_config=audio_config
         )
-        return response.audio_content  # might still be empty, we can handle that downstream
+        if response.audio_content:
+            print("TTS: Used fallback Standard voice.")
+        return response.audio_content
     except Exception as e:
-        st.error(f"Error in text-to-speech fallback: {e}")
+        st.error(f"Text-to-speech fallback failed: {e}")
+        print(f"TTS fallback error: {e}")
         return None
 
 def main():
@@ -307,7 +306,40 @@ def main():
 
     if credentials is None:
         st.warning("Google Cloud Speech services are not configured. Voice features will not be available.")
-    
+
+    # --- Minimal TTS Test button ---
+    st.write("---")
+    st.write("### Test Basic TTS")
+    st.write("Use this button to confirm if TTS is working at all.")
+    if st.button("Test Basic TTS"):
+        if credentials:
+            st.write("Attempting a minimal TTS call...")
+            tts_client = texttospeech.TextToSpeechClient(credentials=credentials)
+            test_input = texttospeech.SynthesisInput(text="Hello from the TTS test!")
+            voice = texttospeech.VoiceSelectionParams(
+                language_code="en-GB"  # no named voice
+            )
+            audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
+
+            try:
+                response = tts_client.synthesize_speech(
+                    input=test_input,
+                    voice=voice,
+                    audio_config=audio_config
+                )
+                audio_bytes = response.audio_content
+                bytes_len = len(audio_bytes) if audio_bytes else 0
+                st.write(f"Basic TTS returned {bytes_len} bytes.")
+                print(f"[Minimal TTS] returned {bytes_len} bytes.")
+                if audio_bytes:
+                    st.audio(audio_bytes, format="audio/mp3")
+            except Exception as e:
+                st.error(f"TTS minimal test failed: {e}")
+                print(f"TTS minimal test error: {e}")
+        else:
+            st.error("No credentials available for TTS test.")
+    st.write("---")
+
     if "conversation" not in st.session_state:
         st.session_state.conversation = []
     if "current_question" not in st.session_state:
@@ -315,11 +347,12 @@ def main():
             "Thank you for agreeing to speak with us about your recent rugby taster session. "
             "To begin, can you tell me a bit about yourself and any previous experience with rugby or other sports?"
         )
-        # Generate TTS for the initial question
+        # Generate TTS for the initial question if credentials are available
         if credentials is not None:
+            st.write("Attempting TTS for initial question...")
             try:
                 audio_bytes = text_to_speech(st.session_state.current_question)
-                info_str = debug_print_tts(audio_bytes, "Initial TTS")
+                info_str = debug_print_tts(audio_bytes, label="Initial Q TTS")
                 if audio_bytes and len(audio_bytes) > 0:
                     st.session_state.current_audio = audio_bytes
                     st.success("Initial question audio generated successfully.")
@@ -338,7 +371,6 @@ def main():
     An AI assistant will ask main questions and follow-up probing questions.
     """)
 
-    # Consent checkbox
     consent = st.checkbox("I have read the information sheet and give my consent to participate in this interview.")
 
     if consent:
@@ -349,40 +381,37 @@ def main():
         if "current_audio" in st.session_state and st.session_state.current_audio:
             st.caption(f"(Audio length = {len(st.session_state.current_audio)} bytes)")
             st.audio(st.session_state.current_audio, format="audio/mp3")
-            # Regenerate button
             if st.button("Regenerate Question Audio"):
                 try:
                     audio_bytes = text_to_speech(st.session_state.current_question)
-                    debug_str = debug_print_tts(audio_bytes, "Regenerated TTS")
+                    dbg = debug_print_tts(audio_bytes, label="Regenerated Q TTS")
                     if audio_bytes and len(audio_bytes) > 0:
                         st.session_state.current_audio = audio_bytes
-                        st.success(f"Audio regenerated successfully. {debug_str}")
+                        st.success(f"Audio regenerated successfully. {dbg}")
                     else:
-                        st.warning(f"No audio returned. {debug_str}")
+                        st.warning(f"No audio returned. {dbg}")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Error regenerating audio: {e}")
         else:
-            st.warning("Audio for this question is not available. Possibly TTS returned 0 bytes.")
+            st.warning("Audio for this question is not available (possibly TTS returned 0 bytes).")
             if st.button("Generate Audio for Question"):
                 try:
                     audio_bytes = text_to_speech(st.session_state.current_question)
-                    debug_str = debug_print_tts(audio_bytes, "On-demand TTS")
+                    dbg = debug_print_tts(audio_bytes, label="On-demand Q TTS")
                     if audio_bytes and len(audio_bytes) > 0:
                         st.session_state.current_audio = audio_bytes
-                        st.success(f"Audio generated successfully. {debug_str}")
+                        st.success(f"Audio generated successfully. {dbg}")
                         st.experimental_rerun()
                     else:
-                        st.error(f"Failed to generate audio (0 bytes). {debug_str}")
+                        st.error(f"Failed to generate audio (0 bytes). {dbg}")
                 except Exception as e:
                     st.error(f"Error generating audio: {e}")
         
-        # Voice recording
         if credentials is not None:
             st.write("**Speak your answer:**")
             audio_bytes = audio_recorder()
             st.warning("Note: Voice recognition may not be perfect. If your response is off, please type below.")
-            
             if audio_bytes:
                 st.success("Audio recorded! Transcribing...")
                 try:
@@ -393,17 +422,15 @@ def main():
                     st.error(f"Error transcribing audio: {str(e)}")
                     st.session_state.current_transcript = ""
         else:
-            st.info("Voice recording not available. Please type your response below.")
+            st.info("Voice recording not available (no credentials). Please type your response below.")
             st.session_state.current_transcript = ""
         
-        # Text area for editing or typing
         user_answer = st.text_area(
             "Your response (edit transcription or type):", 
             value=st.session_state.get("current_transcript", ""),
             key=f"user_input_{len(st.session_state.conversation)}"
         )
 
-        # 1–10 rating
         user_rating = st.radio(
             "On a scale of 1–10, how would you rate your experience relating to the current question/topic?",
             options=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
@@ -416,7 +443,6 @@ def main():
         st.write(f"**Interview Progress: {completed_questions} out of {total_questions} questions answered**")
         st.progress(progress_percentage)
 
-        # Submit answer
         if st.button("Submit Answer"):
             if user_answer.strip():
                 combined_user_content = f"Answer: {user_answer}\nRating: {user_rating}"
@@ -436,23 +462,21 @@ def main():
                 if credentials is not None:
                     try:
                         next_audio = text_to_speech(ai_response)
-                        debug_str = debug_print_tts(next_audio, "Follow-up TTS")
+                        dbg = debug_print_tts(next_audio, label="Follow-up TTS")
                         if next_audio and len(next_audio) > 0:
                             st.session_state.current_audio = next_audio
                         else:
-                            st.warning(f"Failed to generate audio for follow-up. {debug_str}")
+                            st.warning(f"Failed to generate audio for follow-up. {dbg}")
                             st.session_state.current_audio = None
                     except Exception as e:
                         st.warning(f"Unable to generate speech: {e}")
                         st.session_state.current_audio = None
                 
-                # Reset transcript
                 st.session_state.current_transcript = ""
                 st.rerun()
             else:
                 st.warning("Please provide an answer before submitting.")
 
-        # End interview
         if st.button("End Interview"):
             st.success("Interview completed! Thank you for sharing your rugby taster session experience.")
             st.session_state.current_question = "Interview ended"
@@ -463,14 +487,12 @@ def main():
             
             st.markdown(get_transcript_download_link(st.session_state.conversation), unsafe_allow_html=True)
 
-        # Show transcript
         if st.checkbox("Show Interview Transcript"):
             st.write("**Interview Transcript:**")
             for entry in st.session_state.conversation:
                 st.write(f"**{entry['role'].capitalize()}:** {entry['content']}")
                 st.write("---")
 
-        # Restart
         if st.button("Restart Interview"):
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
