@@ -19,6 +19,9 @@ from google.oauth2 import service_account
 # For audio recording
 from audio_recorder_streamlit import audio_recorder
 
+# NEW IMPORT: pydub for audio conversion
+from pydub import AudioSegment
+
 # --- Retrieve secrets (with fallback to None) ---
 PASSWORD = st.secrets.get("password", None)
 OPENAI_API_KEY = st.secrets.get("openai_api_key", None)
@@ -57,7 +60,7 @@ interview_topics = [
 total_questions = len(interview_topics)
 
 def clean_json_string(json_str):
-    """Clean a JSON string that may contain invalid control characters"""
+    """Clean a JSON string that may contain invalid control characters."""
     # Replace literal \n with actual newlines (helps with private key formatting)
     json_str = json_str.replace("\\n", "\n")
     
@@ -183,57 +186,58 @@ def transcribe_audio(audio_bytes):
         tmp_file_path = tmp_file.name
     
     try:
+        # NEW: Convert the file to mono using pydub
+        try:
+            sound = AudioSegment.from_file(tmp_file_path, format="wav")
+            sound_mono = sound.set_channels(1)
+            sound_mono.export(tmp_file_path, format="wav")
+        except Exception as conv_err:
+            raise Exception(f"Error converting audio to mono: {str(conv_err)}")
+        
         # Create speech client
         client = speech.SpeechClient(credentials=credentials)
         
-        # Load the audio file
+        # Load the (now mono) audio file
         with open(tmp_file_path, "rb") as audio_file:
             content = audio_file.read()
         
-        # Try with different configuration options to handle stereo audio
-        # First try telling the API to use the first channel of stereo audio
+        # Try with first configuration (LINEAR16)
         try:
             audio = speech.RecognitionAudio(content=content)
             config = speech.RecognitionConfig(
                 encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
                 sample_rate_hertz=48000,
                 language_code="en-GB",
-                # Use only the first channel of stereo audio
-                audio_channel_count=2,
-                enable_separate_recognition_per_channel=True
             )
             
             response = client.recognize(config=config, audio=audio)
             
-            # Extract and return the transcript
             transcript = ""
             for result in response.results:
                 transcript += result.alternatives[0].transcript
             
-            if transcript:
-                return transcript
+            if transcript.strip():
+                return transcript.strip()
                 
         except Exception as first_attempt_error:
-            # Log the error but continue to the second attempt
             print(f"First transcription attempt failed: {str(first_attempt_error)}")
         
-        # Second attempt: try with RAW encoding which might handle stereo better
+        # Second attempt: let the API detect the encoding
         try:
             audio = speech.RecognitionAudio(content=content)
             config = speech.RecognitionConfig(
-                encoding=speech.RecognitionConfig.AudioEncoding.ENCODING_UNSPECIFIED,  # Let API detect
+                encoding=speech.RecognitionConfig.AudioEncoding.ENCODING_UNSPECIFIED,
                 sample_rate_hertz=48000,
-                language_code="en-GB"
+                language_code="en-GB",
             )
             
             response = client.recognize(config=config, audio=audio)
             
-            # Extract and return the transcript
             transcript = ""
             for result in response.results:
                 transcript += result.alternatives[0].transcript
             
-            return transcript
+            return transcript.strip()
             
         except Exception as second_attempt_error:
             # Both attempts failed
