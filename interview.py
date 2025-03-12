@@ -720,9 +720,6 @@ def main():
             st.write("Please speak into your microphone:")
             test_audio_bytes = audio_recorder(
                 pause_threshold=2.0,  # Longer pause threshold before stopping
-                recording_color="#FF
-            test_audio_bytes = audio_recorder(
-                pause_threshold=2.0,  # Longer pause threshold before stopping
                 recording_color="#FF5733",  # More visible recording color
                 neutral_color="#6aa36f"
             )
