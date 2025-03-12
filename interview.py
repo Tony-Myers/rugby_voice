@@ -72,8 +72,7 @@ def clean_json_string(json_str):
     json_str = re.sub(r'[\x00-\x09\x0b\x0c\x0e-\x1f\x7f]', '', json_str)
     
     return json_str
-
-# --- Setup Google Cloud credentials ---
+    # --- Setup Google Cloud credentials ---
 credentials = None
 if "google_credentials" in st.secrets:
     try:
@@ -255,8 +254,7 @@ def send_email(transcript_md):
     except Exception as e:
         st.error(f"Error sending email: {str(e)}")
         return False
-
-def transcribe_audio(audio_bytes):
+        def transcribe_audio(audio_bytes):
     if credentials is None:
         st.warning("Speech-to-text unavailable. Please type your response instead.")
         return "Voice transcription unavailable. Please type your response."
@@ -482,8 +480,7 @@ def try_all_tts_voices():
         error_message = f"Error testing voices: {type(e).__name__}: {str(e)}"
         print(error_message)
         return error_message, None, None
-
-def main():
+        def main():
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
 
@@ -646,6 +643,11 @@ def main():
     By ticking yes below, you consent to participate in this interview about your experience in a rugby taster session. 
     Your responses may be anonymously quoted in publications. You may end the interview at any time and request 
     your data be removed by emailing tony.myers@staff.newman.ac.uk. 
+    An AI assistant will ask main questions anst.write("""
+    **Information Sheet and Consent**  
+    By ticking yes below, you consent to participate in this interview about your experience in a rugby taster session. 
+    Your responses may be anonymously quoted in publications. You may end the interview at any time and request 
+    your data be removed by emailing tony.myers@staff.newman.ac.uk. 
     An AI assistant will ask main questions and follow-up probing questions.
     """)
 
@@ -678,4 +680,112 @@ def main():
                 except Exception as e:
                     st.error(f"Error regenerating audio: {e}")
         else:
-            st.warning("Audio for this question is not available (
+            st.warning("Audio for this question is not available. You can try generating it.")
+            if st.button("Generate Audio for Question"):
+                try:
+                    audio_bytes, mime_type = text_to_speech(st.session_state.current_question)
+                    dbg = debug_print_tts(audio_bytes, label="On-demand Q TTS")
+                    if audio_bytes and len(audio_bytes) > 0:
+                        st.session_state.current_audio = audio_bytes
+                        st.session_state.current_audio_mime = mime_type
+                        st.success(f"Audio generated successfully. {dbg}")
+                        st.experimental_rerun()
+                    else:
+                        st.error(f"Failed to generate audio (0 bytes). {dbg}")
+                except Exception as e:
+                    st.error(f"Error generating audio: {e}")
+                    if credentials is not None:
+            st.write("**Speak your answer:**")
+            audio_bytes = audio_recorder()
+            st.warning("Note: Voice recognition may not be perfect. If your response is off, please type below.")
+            if audio_bytes:
+                st.success("Audio recorded! Transcribing...")
+                try:
+                    transcript = transcribe_audio(audio_bytes)
+                    st.session_state.current_transcript = transcript
+                    st.write(f"**Transcribed:** {transcript}")
+                except Exception as e:
+                    st.error(f"Error transcribing audio: {str(e)}")
+                    st.session_state.current_transcript = ""
+        else:
+            st.info("Voice recording not available (no credentials). Please type your response below.")
+            st.session_state.current_transcript = ""
+        
+        user_answer = st.text_area(
+            "Your response (edit transcription or type):", 
+            value=st.session_state.get("current_transcript", ""),
+            key=f"user_input_{len(st.session_state.conversation)}"
+        )
+
+        user_rating = st.radio(
+            "On a scale of 1–10, how would you rate your experience relating to the current question/topic?",
+            options=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            index=4
+        )
+
+        # Progress
+        completed_questions = len([entry for entry in st.session_state.conversation if entry['role'] == "user"])
+        progress_percentage = min(completed_questions / total_questions, 1.0)
+        st.write(f"**Interview Progress: {completed_questions} out of {total_questions} questions answered**")
+        st.progress(progress_percentage)
+
+        if st.button("Submit Answer"):
+            if user_answer.strip():
+                combined_user_content = f"Answer: {user_answer}\nRating: {user_rating}"
+                st.session_state.conversation.append({"role": "user", "content": combined_user_content})
+                
+                ai_prompt = (
+                    f"User's answer: {user_answer}\n"
+                    f"User's rating: {user_rating}\n"
+                    f"Provide feedback and ask a follow-up question."
+                )
+                ai_response = generate_response(ai_prompt, st.session_state.conversation)
+                
+                st.session_state.conversation.append({"role": "assistant", "content": ai_response})
+                st.session_state.current_question = ai_response
+                
+                # Attempt TTS for the new question
+                if credentials is not None:
+                    try:
+                        next_audio, mime_type = text_to_speech(ai_response)
+                        dbg = debug_print_tts(next_audio, label="Follow-up TTS")
+                        if next_audio and len(next_audio) > 0:
+                            st.session_state.current_audio = next_audio
+                            st.session_state.current_audio_mime = mime_type
+                        else:
+                            st.warning(f"Failed to generate audio for follow-up. {dbg}")
+                            st.session_state.current_audio = None
+                            st.session_state.current_audio_mime = None
+                    except Exception as e:
+                        st.warning(f"Unable to generate speech: {e}")
+                        st.session_state.current_audio = None
+                        st.session_state.current_audio_mime = None
+                
+                st.session_state.current_transcript = ""
+                st.rerun()
+            else:
+                st.warning("Please provide an answer before submitting.")
+
+        if st.button("End Interview"):
+            st.success("Interview completed! Thank you for sharing your rugby taster session experience.")
+            st.session_state.current_question = "Interview ended"
+            
+            transcript_md = convert_to_markdown(st.session_state.conversation)
+            if send_email(transcript_md):
+                st.info("Your transcript has been emailed to the researcher.")
+            
+            st.markdown(get_transcript_download_link(st.session_state.conversation), unsafe_allow_html=True)
+
+        if st.checkbox("Show Interview Transcript"):
+            st.write("**Interview Transcript:**")
+            for entry in st.session_state.conversation:
+                st.write(f"**{entry['role'].capitalize()}:** {entry['content']}")
+                st.write("---")
+
+        if st.button("Restart Interview"):
+            for key in list(st.session_state.keys()):
+                del st.session_state[key]
+            st.rerun()
+
+if __name__ == "__main__":
+    main()
