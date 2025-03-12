@@ -76,21 +76,60 @@ credentials = None
 if "google_credentials" in st.secrets:
     try:
         creds_raw = st.secrets["google_credentials"]
+        # Print first few characters to debug (don't print the whole thing for security)
+        print(f"Credential string starts with: {creds_raw[:20]}..." if isinstance(creds_raw, str) else "Credentials are not a string")
+        
         if isinstance(creds_raw, str):
             creds_raw = clean_json_string(creds_raw)
             try:
                 creds_dict = json.loads(creds_raw)
-                credentials = service_account.Credentials.from_service_account_info(creds_dict)
-                st.success("Google Cloud credentials loaded successfully. Voice features are available.")
+                # Check for required fields in service account credentials
+                required_fields = ["type", "project_id", "private_key_id", "private_key", "client_email"]
+                missing_fields = [field for field in required_fields if field not in creds_dict]
+                if missing_fields:
+                    st.error(f"Google credentials missing required fields: {missing_fields}")
+                    print(f"Missing credential fields: {missing_fields}")
+                else:
+                    credentials = service_account.Credentials.from_service_account_info(creds_dict)
+                    st.success("Google Cloud credentials loaded successfully. Voice features are available.")
             except json.JSONDecodeError as json_err:
                 st.error(f"Invalid JSON format in google_credentials: {json_err}")
                 print(f"JSON parse error: {json_err}")
+                print(f"First 100 chars of cleaned JSON: {creds_raw[:100]}...")
         else:
             credentials = service_account.Credentials.from_service_account_info(creds_raw)
             st.success("Google Cloud credentials loaded successfully. Voice features are available.")
     except Exception as e:
-        st.warning(f"Error loading Google Cloud credentials: {type(e).__name__}")
+        st.warning(f"Error loading Google Cloud credentials: {type(e).__name__}: {str(e)}")
         print(f"Credential error details: {str(e)}")
+
+def verify_google_apis():
+    """Verify that the required Google APIs are enabled and accessible."""
+    if credentials is None:
+        return "No credentials available"
+    
+    results = []
+    # Test Text-to-Speech
+    try:
+        tts_client = texttospeech.TextToSpeechClient(credentials=credentials)
+        voices = tts_client.list_voices()
+        results.append("✅ Text-to-Speech API is accessible")
+    except Exception as e:
+        results.append(f"❌ Text-to-Speech API error: {str(e)}")
+    
+    # Test Speech-to-Text
+    try:
+        speech_client = speech.SpeechClient(credentials=credentials)
+        config = speech.RecognitionConfig(
+            encoding=speech.RecognitionConfig.AudioEncoding.ENCODING_UNSPECIFIED,
+            sample_rate_hertz=16000,
+            language_code="en-GB",
+        )
+        results.append("✅ Speech-to-Text API is accessible")
+    except Exception as e:
+        results.append(f"❌ Speech-to-Text API error: {str(e)}")
+    
+    return "\n".join(results)
 
 def generate_response(prompt, conversation_history=None):
     try:
@@ -242,50 +281,118 @@ def text_to_speech(text):
     
     tts_client = texttospeech.TextToSpeechClient(credentials=credentials)
     
-    # Try a Wavenet voice first
-    first_choice = texttospeech.VoiceSelectionParams(
+    # Simplify the voice selection - use standard voice without specifying a name
+    voice = texttospeech.VoiceSelectionParams(
         language_code="en-GB",
-        name="en-GB-Wavenet-A",
-        ssml_gender=texttospeech.SsmlVoiceGender.NEUTRAL
-    )
-    # Fallback standard voice
-    fallback_choice = texttospeech.VoiceSelectionParams(
-        language_code="en-GB",
-        name="en-GB-Standard-A",
         ssml_gender=texttospeech.SsmlVoiceGender.NEUTRAL
     )
     
-    audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
+    # Use MP3 format for better compatibility
+    audio_config = texttospeech.AudioConfig(
+        audio_encoding=texttospeech.AudioEncoding.MP3,
+        speaking_rate=1.0,  # Normal speaking rate
+        pitch=0.0,  # Default pitch
+        volume_gain_db=0.0  # Default volume
+    )
+    
     synthesis_input = texttospeech.SynthesisInput(text=text)
     
-    # Attempt #1
     try:
         response = tts_client.synthesize_speech(
             input=synthesis_input,
-            voice=first_choice,
+            voice=voice,
             audio_config=audio_config
         )
         if response.audio_content:
-            print("TTS: Successfully used Wavenet voice.")
+            print(f"TTS: Generated {len(response.audio_content)} bytes of audio.")
             return response.audio_content
-        st.warning("TTS returned empty audio content with Wavenet voice. Attempting fallback.")
+        else:
+            print("TTS: Received empty audio content.")
+            return None
     except Exception as e:
-        st.warning(f"TTS Wavenet error: {e}, attempting fallback voice.")
+        print(f"TTS error: {str(e)}")
+        return None
+
+def test_tts_detailed():
+    """Run a detailed test of TTS functionality with debugging information."""
+    if credentials is None:
+        return "No credentials available", None
     
-    # Attempt #2
     try:
+        # 1. Create client
+        tts_client = texttospeech.TextToSpeechClient(credentials=credentials)
+        print("TTS client created successfully")
+        
+        # 2. List available voices to verify API connection
+        try:
+            voices = tts_client.list_voices(language_code="en-GB")
+            voice_names = [voice.name for voice in voices.voices]
+            print(f"Available voices: {voice_names[:3]} (showing first 3 of {len(voice_names)})")
+        except Exception as e:
+            print(f"Error listing voices: {str(e)}")
+        
+        # 3. Test with minimal voice settings
+        test_input = texttospeech.SynthesisInput(text="This is a test of text to speech.")
+        voice = texttospeech.VoiceSelectionParams(language_code="en-GB")
+        audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
+        
         response = tts_client.synthesize_speech(
-            input=synthesis_input,
-            voice=fallback_choice,
+            input=test_input, 
+            voice=voice,
             audio_config=audio_config
         )
-        if response.audio_content:
-            print("TTS: Used fallback Standard voice.")
-        return response.audio_content
+        
+        print(f"TTS response received with {len(response.audio_content)} bytes")
+        return "TTS test completed successfully", response.audio_content
     except Exception as e:
-        st.error(f"Text-to-speech fallback failed: {e}")
-        print(f"TTS fallback error: {e}")
-        return None
+        error_message = f"TTS test failed: {type(e).__name__}: {str(e)}"
+        print(error_message)
+        return error_message, None
+
+def try_all_tts_voices():
+    """Try all available TTS voices to find one that works."""
+    if credentials is None:
+        return "No credentials available", None
+    
+    results = []
+    try:
+        tts_client = texttospeech.TextToSpeechClient(credentials=credentials)
+        voices = tts_client.list_voices(language_code="en-GB")
+        
+        test_text = "This is a test of the Google Text-to-Speech API."
+        test_input = texttospeech.SynthesisInput(text=test_text)
+        audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
+        
+        # Try up to 5 voices
+        for i, voice_info in enumerate(voices.voices[:5]):
+            try:
+                voice = texttospeech.VoiceSelectionParams(
+                    language_code="en-GB",
+                    name=voice_info.name
+                )
+                
+                print(f"Trying voice: {voice_info.name}")
+                response = tts_client.synthesize_speech(
+                    input=test_input,
+                    voice=voice,
+                    audio_config=audio_config
+                )
+                
+                if response and response.audio_content:
+                    results.append(f"✅ Voice {voice_info.name}: Generated {len(response.audio_content)} bytes")
+                    # Return the first successful voice
+                    return f"Found working voice: {voice_info.name}", response.audio_content
+                else:
+                    results.append(f"❌ Voice {voice_info.name}: No audio content returned")
+            except Exception as e:
+                results.append(f"❌ Voice {voice_info.name}: Error: {str(e)}")
+        
+        # If we get here, none of the voices worked
+        return "No working voices found. Details:\n" + "\n".join(results), None
+    except Exception as e:
+        error_message = f"Error testing voices: {type(e).__name__}: {str(e)}"
+        print(error_message)
+        return error_message, None
 
 def main():
     if "authenticated" not in st.session_state:
@@ -306,6 +413,14 @@ def main():
 
     if credentials is None:
         st.warning("Google Cloud Speech services are not configured. Voice features will not be available.")
+
+    # --- Verify Google APIs button ---
+    st.write("---")
+    st.write("### Verify Google Cloud APIs")
+    if st.button("Check API Access"):
+        with st.spinner("Verifying API access..."):
+            results = verify_google_apis()
+            st.code(results, language="text")
 
     # --- Minimal TTS Test button ---
     st.write("---")
@@ -338,6 +453,39 @@ def main():
                 print(f"TTS minimal test error: {e}")
         else:
             st.error("No credentials available for TTS test.")
+
+    # --- Detailed TTS Test button ---
+    st.write("### Detailed TTS Test")
+    st.write("This test will provide more information to diagnose TTS issues.")
+    if st.button("Run Detailed TTS Test"):
+        if credentials:
+            with st.spinner("Testing TTS with detailed diagnostics..."):
+                message, audio_bytes = test_tts_detailed()
+                st.write(message)
+                if audio_bytes:
+                    st.audio(audio_bytes, format="audio/mp3")
+                    st.success(f"Successfully generated {len(audio_bytes)} bytes of audio.")
+                else:
+                    st.error("No audio was generated.")
+        else:
+            st.error("No credentials available for TTS test.")
+
+    # --- Try All Voices button ---
+    st.write("### Try All Available Voices")
+    st.write("This will test multiple voices to find one that works.")
+    if st.button("Try All Voices"):
+        if credentials:
+            with st.spinner("Testing multiple TTS voices..."):
+                message, audio_bytes = try_all_tts_voices()
+                st.write(message)
+                if audio_bytes:
+                    st.audio(audio_bytes, format="audio/mp3")
+                    st.success(f"Successfully generated {len(audio_bytes)} bytes of audio.")
+                else:
+                    st.error("No audio was generated from any voice.")
+        else:
+            st.error("No credentials available for voice testing.")
+    
     st.write("---")
 
     if "conversation" not in st.session_state:
