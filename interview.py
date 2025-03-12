@@ -687,7 +687,7 @@ def main():
                         st.session_state.current_audio = audio_bytes
                         st.session_state.current_audio_mime = mime_type
                         st.success(f"Audio generated successfully. {dbg}")
-                        st.experimental_rerun()
+                        st.rerun()
                     else:
                         st.error(f"Failed to generate audio (0 bytes). {dbg}")
                 except Exception as e:
