@@ -4,3 +4,4 @@ pandas
 audio-recorder-streamlit
 google-cloud-speech
 google-cloud-texttospeech
+pydub
