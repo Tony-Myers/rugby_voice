@@ -257,6 +257,7 @@ def send_email(transcript_md):
         return False
 
 def transcribe_audio(audio_bytes):
+    """Enhanced voice transcription with multiple fallback methods."""
     if credentials is None:
         st.warning("Speech-to-text unavailable. Please type your response instead.")
         return "Voice transcription unavailable. Please type your response."
@@ -266,27 +267,76 @@ def transcribe_audio(audio_bytes):
         tmp_file_path = tmp_file.name
     
     try:
-        # Convert stereo to mono
+        # Print debug info about the audio file
+        print(f"Audio file size: {len(audio_bytes)} bytes")
+        
+        # Try different approaches for audio conversion
         try:
+            # First approach: Use pydub to normalize the audio
             sound = AudioSegment.from_file(tmp_file_path, format="wav")
+            
+            # Get audio details for debugging
+            print(f"Original audio: channels={sound.channels}, sample_rate={sound.frame_rate}, sample_width={sound.sample_width}")
+            
+            # Convert to mono
             sound_mono = sound.set_channels(1)
-            sound_mono.export(tmp_file_path, format="wav")
-        except Exception as conv_err:
-            raise Exception(f"Error converting audio to mono: {conv_err}")
-        
-        client = speech.SpeechClient(credentials=credentials)
-        
-        with open(tmp_file_path, "rb") as audio_file:
-            content = audio_file.read()
-        
-        # Attempt 1: LINEAR16
-        try:
+            # Try different sample rates
+            sample_rates = [16000, 44100, 48000]
+            
+            for rate in sample_rates:
+                try:
+                    print(f"Converting audio to {rate}Hz sample rate")
+                    sound_converted = sound_mono.set_frame_rate(rate)
+                    converted_path = f"{tmp_file_path}_{rate}.wav"
+                    sound_converted.export(converted_path, format="wav")
+                    
+                    client = speech.SpeechClient(credentials=credentials)
+                    
+                    with open(converted_path, "rb") as audio_file:
+                        content = audio_file.read()
+                    
+                    audio = speech.RecognitionAudio(content=content)
+                    
+                    # Try both specific and unspecified encoding
+                    encodings = [
+                        speech.RecognitionConfig.AudioEncoding.LINEAR16,
+                        speech.RecognitionConfig.AudioEncoding.ENCODING_UNSPECIFIED
+                    ]
+                    
+                    for encoding in encodings:
+                        config = speech.RecognitionConfig(
+                            encoding=encoding,
+                            sample_rate_hertz=rate,
+                            language_code="en-GB",
+                        )
+                        
+                        try:
+                            print(f"Attempting transcription with {rate}Hz and encoding {encoding}")
+                            response = client.recognize(config=config, audio=audio)
+                            
+                            transcript = ""
+                            for result in response.results:
+                                transcript += result.alternatives[0].transcript
+                            
+                            if transcript.strip():
+                                print(f"Successfully transcribed with {rate}Hz and encoding {encoding}")
+                                return transcript.strip()
+                        except Exception as e:
+                            print(f"Failed with {rate}Hz and encoding {encoding}: {e}")
+                except Exception as rate_error:
+                    print(f"Error converting to {rate}Hz: {rate_error}")
+            
+            # Last resort: Try with original audio and auto-detection
+            print("Trying transcription with original audio file")
+            with open(tmp_file_path, "rb") as audio_file:
+                content = audio_file.read()
+            
             audio = speech.RecognitionAudio(content=content)
             config = speech.RecognitionConfig(
-                encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
-                sample_rate_hertz=48000,
+                encoding=speech.RecognitionConfig.AudioEncoding.ENCODING_UNSPECIFIED,
                 language_code="en-GB",
             )
+            
             response = client.recognize(config=config, audio=audio)
             
             transcript = ""
@@ -295,32 +345,50 @@ def transcribe_audio(audio_bytes):
             
             if transcript.strip():
                 return transcript.strip()
-        except Exception as first_attempt_error:
-            print(f"First transcription attempt failed: {first_attempt_error}")
-        
-        # Attempt 2: let the API detect encoding
+            
+        except Exception as conv_err:
+            print(f"Error in audio conversion/transcription: {conv_err}")
+            
+        # Final fallback approach
         try:
+            print("Using fallback approach with direct audio")
+            client = speech.SpeechClient(credentials=credentials)
+            
+            with open(tmp_file_path, "rb") as audio_file:
+                content = audio_file.read()
+            
             audio = speech.RecognitionAudio(content=content)
             config = speech.RecognitionConfig(
                 encoding=speech.RecognitionConfig.AudioEncoding.ENCODING_UNSPECIFIED,
-                sample_rate_hertz=48000,
                 language_code="en-GB",
+                audio_channel_count=1,
             )
+            
             response = client.recognize(config=config, audio=audio)
             
             transcript = ""
             for result in response.results:
                 transcript += result.alternatives[0].transcript
-            return transcript.strip()
-        except Exception as second_attempt_error:
-            raise Exception(f"Multiple transcription attempts failed. Last error: {second_attempt_error}")
+            
+            if transcript.strip():
+                return transcript.strip()
+            else:
+                return "Could not transcribe audio. Please type your response."
+                
+        except Exception as e:
+            raise Exception(f"All transcription attempts failed: {str(e)}")
             
     except Exception as e:
         st.error(f"Error in speech recognition: {e}")
         return f"Error: {str(e)}"
     finally:
+        # Clean up temp files
         if os.path.exists(tmp_file_path):
             os.unlink(tmp_file_path)
+        for rate in [16000, 44100, 48000]:
+            converted_path = f"{tmp_file_path}_{rate}.wav"
+            if os.path.exists(converted_path):
+                os.unlink(converted_path)
 
 def debug_print_tts(audio_content, label="TTS debug"):
     if audio_content is None:
@@ -579,6 +647,31 @@ def main():
         else:
             st.error("No credentials available for TTS test.")
 
+    # --- Voice Recognition Test ---
+    st.write("### Test Voice Recognition")
+    st.write("This test checks if the speech-to-text functionality is working.")
+    if st.button("Test Voice Recognition"):
+        if credentials:
+            st.write("Please speak into your microphone:")
+            test_audio_bytes = audio_recorder()
+            if test_audio_bytes:
+                st.success("Audio recorded!")
+                
+                # Add download link for the audio file for debugging
+                st.write("Download the recorded audio for troubleshooting:")
+                st.markdown(get_audio_download_link(test_audio_bytes, "audio/wav", "test_recording.wav"), unsafe_allow_html=True)
+                
+                with st.spinner("Transcribing your speech..."):
+                    transcript = transcribe_audio(test_audio_bytes)
+                    if transcript and not transcript.startswith("Error:"):
+                        st.success("Transcription successful!")
+                        st.write(f"**Transcribed Text:** {transcript}")
+                    else:
+                        st.error("Transcription failed.")
+                        st.write(f"Details: {transcript}")
+        else:
+            st.error("No credentials available for voice recognition test.")
+
     # --- Detailed TTS Test button ---
     st.write("### Detailed TTS Test")
     st.write("This test will provide more information to diagnose TTS issues.")
@@ -698,7 +791,13 @@ def main():
             audio_bytes = audio_recorder()
             st.warning("Note: Voice recognition may not be perfect. If your response is off, please type below.")
             if audio_bytes:
-                st.success("Audio recorded! Transcribing...")
+                st.success("Audio recorded!")
+                
+                # Add download link for the audio file for debugging
+                st.write("Download the recorded audio for troubleshooting:")
+                st.markdown(get_audio_download_link(audio_bytes, "audio/wav", "recorded_audio.wav"), unsafe_allow_html=True)
+                
+                st.write("Transcribing...")
                 try:
                     transcript = transcribe_audio(audio_bytes)
                     st.session_state.current_transcript = transcript
@@ -788,4 +887,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
