@@ -312,7 +312,7 @@ def main():
     if "conversation" not in st.session_state:
         st.session_state["conversation"] = []
 
-    # The current AI question
+    # This will hold the question text and associated audio we want to play:
     if "current_question" not in st.session_state:
         st.session_state["current_question"] = (
             "Thank you for agreeing to speak with us about your recent rugby taster session. "
@@ -335,21 +335,27 @@ def main():
                 st.session_state["current_audio"] = None
                 st.session_state["current_audio_mime"] = None
 
-    # --- CHANGES START: Display and autoplay the AI question immediately ---
+    # To avoid replaying the same audio on every rerun, store a flag keyed by the question text:
+    if "audio_played_for" not in st.session_state:
+        st.session_state["audio_played_for"] = ""
+
+    # Display the AI question text
     st.markdown(f"**AI Question:** {st.session_state['current_question']}")
-    if "current_audio" in st.session_state and st.session_state["current_audio"]:
+
+    # Autoplay the question ONLY if we have not played it before
+    if st.session_state.get("current_audio") and st.session_state["audio_played_for"] != st.session_state["current_question"]:
         st.components.v1.html(
             get_autoplay_audio_html(st.session_state["current_audio"], st.session_state["current_audio_mime"]),
             height=80
         )
-    # --- CHANGES END ---
+        # Mark that we've played audio for this exact question
+        st.session_state["audio_played_for"] = st.session_state["current_question"]
 
     # Recording section
     if st.session_state["phase"] == "ready_for_question":
         st.write("---")
         st.write("Please allow access to your microphone if prompted.")
-        st.write("Press the button to **Start Recording** (it will turn red), and press the same button to **Stop Recording**.")
-        # --- CHANGES START: Clearer record/stop text ---
+        st.write("Press the button below to **start recording** (it turns red). To **stop recording**, press it again.")
         audio_bytes = audio_recorder(
             pause_threshold=9999,
             recording_color="#FF5733",
@@ -357,7 +363,6 @@ def main():
             text="Press to START or STOP recording",
             energy_threshold=0.01,
         )
-        # --- CHANGES END ---
 
         if audio_bytes:
             try:
@@ -374,26 +379,33 @@ def main():
                     # Store user response in conversation
                     st.session_state["conversation"].append({"role": "user", "content": transcript})
 
-                    # Move to rating phase automatically and generate TTS
+                    # Now move to rating phase
                     st.session_state["phase"] = "rating_requested"
                     rating_prompt = "Please provide a rating from 1 to 10 for your experience. Then press the 'Submit Rating' button."
                     audio_rating, rating_mime = text_to_speech(rating_prompt)
                     st.session_state["rating_audio"] = audio_rating
                     st.session_state["rating_mime"] = rating_mime
 
+                    # We will play the rating prompt automatically in that phase, so clear any old question audio
+                    st.session_state["current_audio"] = None
+                    st.session_state["current_audio_mime"] = None
+
                     st.rerun()
             except Exception as e:
                 st.error(f"Error processing recorded audio: {e}")
 
     elif st.session_state["phase"] == "rating_requested":
-        # --- CHANGES START: Automatically play a fixed standard question to request rating ---
+        # If we have rating audio not played yet, auto-play it
         if "rating_audio" in st.session_state and st.session_state["rating_audio"]:
-            st.components.v1.html(
-                get_autoplay_audio_html(st.session_state["rating_audio"], st.session_state["rating_mime"]),
-                height=80
-            )
+            # Only play once if not already
+            if st.session_state["audio_played_for"] != "rating_prompt":
+                st.components.v1.html(
+                    get_autoplay_audio_html(st.session_state["rating_audio"], st.session_state["rating_mime"]),
+                    height=80
+                )
+                st.session_state["audio_played_for"] = "rating_prompt"
+
         st.write("Please provide a rating from 1 to 10, then press 'Submit Rating'.")
-        # --- CHANGES END ---
 
         if "user_rating" not in st.session_state:
             st.session_state["user_rating"] = 5  # default
@@ -407,7 +419,7 @@ def main():
             )
 
             # Generate AI follow-up
-            last_answer = st.session_state["conversation"][-2]["content"]  # user's last full response
+            last_answer = st.session_state["conversation"][-2]["content"]  # user's last main response
             ai_prompt = (
                 f"User's last answer: {last_answer}\n"
                 f"User's rating: {rating_val}\n"
@@ -433,6 +445,9 @@ def main():
                     st.warning(f"Unable to generate speech for follow-up question: {e}")
                     st.session_state["current_audio"] = None
                     st.session_state["current_audio_mime"] = None
+
+            # Reset so the new question can play once
+            st.session_state["audio_played_for"] = ""
 
             # Go back to "ready_for_question"
             st.session_state["phase"] = "ready_for_question"
