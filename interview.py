@@ -43,12 +43,8 @@ if not SENDER_EMAIL:
     missing_secrets.append("sender_email")
 if not EMAIL_PASSWORD:
     missing_secrets.append("email_password")
-
 if missing_secrets:
-    st.error(
-        f"Missing secret(s): {', '.join(missing_secrets)}. "
-        "Please set them in your Streamlit secrets."
-    )
+    st.error(f"Missing secret(s): {', '.join(missing_secrets)}. Please set them in your Streamlit secrets.")
     st.stop()
 
 # --- Interview topics ---
@@ -64,7 +60,6 @@ interview_topics = [
 total_questions = len(interview_topics)
 
 def clean_json_string(json_str):
-    """Clean a JSON string that may contain invalid control characters."""
     json_str = json_str.replace("\\n", "\n")
     json_str = re.sub(r'[\x00-\x09\x0b\x0c\x0e-\x1f\x7f]', '', json_str)
     return json_str
@@ -113,17 +108,14 @@ def get_autoplay_audio_html(audio_bytes, mime_type):
 def send_email(transcript_md):
     subject = "Interview Transcript"
     body = "Please find attached the interview transcript."
-    
     message = MIMEMultipart()
     message["From"] = SENDER_EMAIL
     message["To"] = RECEIVER_EMAIL
     message["Subject"] = subject
     message.attach(MIMEText(body, "plain"))
-    
     attachment_part = MIMEText(transcript_md, "plain")
     attachment_part.add_header("Content-Disposition", "attachment", filename="interview_transcript.md")
     message.attach(attachment_part)
-    
     context = ssl.create_default_context()
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
@@ -135,75 +127,34 @@ def send_email(transcript_md):
         return False
 
 def transcribe_audio(audio_bytes):
-    """Transcribe audio using Google Cloud Speech-to-Text with proper mono conversion."""
+    """Transcribe audio using Google Cloud Speech-to-Text with mono conversion at 16 000 Hz."""
     if credentials is None:
         st.warning("Speech-to-text unavailable. Please type your response instead.")
         return "Voice transcription unavailable. Please type your response."
-    
-    # Write the incoming audio bytes to a temporary file
     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
         tmp_file.write(audio_bytes)
         tmp_file_path = tmp_file.name
-
     try:
         print(f"Audio file size: {len(audio_bytes)} bytes")
-        # Load the audio file and force conversion to mono
+        # Load and convert to mono, then set sample rate to 16 000 Hz
         sound = AudioSegment.from_file(tmp_file_path, format="wav")
-        mono_audio = sound.set_channels(1)
-        
-        # Export the mono audio to an in-memory buffer
+        mono_audio = sound.set_channels(1).set_frame_rate(16000)
         buffer = io.BytesIO()
         mono_audio.export(buffer, format="wav")
         buffer.seek(0)
         mono_content = buffer.read()
-        
         client = speech.SpeechClient(credentials=credentials)
-        transcript = ""
-        # Try different sample rates
-        sample_rates = [16000, 44100, 48000]
-        for rate in sample_rates:
-            try:
-                print(f"Converting audio to {rate}Hz sample rate")
-                sound_converted = mono_audio.set_frame_rate(rate)
-                buffer = io.BytesIO()
-                sound_converted.export(buffer, format="wav")
-                buffer.seek(0)
-                content = buffer.read()
-                
-                audio = speech.RecognitionAudio(content=content)
-                for encoding in [speech.RecognitionConfig.AudioEncoding.LINEAR16, speech.RecognitionConfig.AudioEncoding.ENCODING_UNSPECIFIED]:
-                    config = speech.RecognitionConfig(
-                        encoding=encoding,
-                        sample_rate_hertz=rate,
-                        language_code="en-GB",
-                        enable_automatic_punctuation=True,
-                        model="default",
-                        use_enhanced=True
-                    )
-                    try:
-                        print(f"Attempting transcription with {rate}Hz and encoding {encoding}")
-                        response = client.recognize(config=config, audio=audio)
-                        for result in response.results:
-                            transcript += result.alternatives[0].transcript
-                        if transcript.strip():
-                            print(f"Successfully transcribed with {rate}Hz and encoding {encoding}")
-                            return transcript.strip()
-                    except Exception as e:
-                        print(f"Failed with {rate}Hz and encoding {encoding}: {e}")
-            except Exception as rate_error:
-                print(f"Error converting to {rate}Hz: {rate_error}")
-        
-        # Final fallback: try with the original mono content
-        print("Trying transcription with the original mono audio file")
         audio = speech.RecognitionAudio(content=mono_content)
         config = speech.RecognitionConfig(
-            encoding=speech.RecognitionConfig.AudioEncoding.ENCODING_UNSPECIFIED,
+            encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+            sample_rate_hertz=16000,
             language_code="en-GB",
             enable_automatic_punctuation=True,
             model="default",
             use_enhanced=True
         )
         response = client.recognize(config=config, audio=audio)
+        transcript = ""
         for result in response.results:
             transcript += result.alternatives[0].transcript
         if transcript.strip():
@@ -228,7 +179,6 @@ def debug_print_tts(audio_content, label="TTS debug"):
 def text_to_speech(text):
     if credentials is None:
         return None, None
-    
     tts_client = texttospeech.TextToSpeechClient(credentials=credentials)
     voice = texttospeech.VoiceSelectionParams(
         language_code="en-GB",
@@ -314,6 +264,7 @@ def main():
             else:
                 st.error("Incorrect password.")
         return
+
     st.title("Rugby Taster Session Voice Interview Bot")
     if credentials is None:
         st.warning("Google Cloud Speech services are not configured. Voice features will not be available.")
@@ -341,80 +292,41 @@ def main():
                 st.warning(f"Unable to generate speech for initial question: {e}")
                 st.session_state.current_audio = None
                 st.session_state.current_audio_mime = None
-    st.write(
-        "**Information Sheet and Consent**  \n"
-        "By ticking yes below, you consent to participate in this interview about your experience in a rugby taster session.  \n"
-        "Your responses may be anonymously quoted in publications. You may end the interview at any time and request  \n"
-        "your data be removed by emailing tony.myers@staff.newman.ac.uk.  \n"
-        "An AI assistant will ask main questions and follow-up probing questions."
-    )
-    consent = st.checkbox("I have read the information sheet and give my consent to participate in this interview.")
-    if consent:
-        st.markdown(f"**AI Question:** {st.session_state.current_question}")
-        if "current_audio" in st.session_state and st.session_state.current_audio:
-            st.caption(f"(Audio question will play automatically. Length = {len(st.session_state.current_audio)} bytes)")
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                st.markdown(get_autoplay_audio_html(st.session_state.current_audio, st.session_state.current_audio_mime), unsafe_allow_html=True)
-                st.audio(st.session_state.current_audio, format=st.session_state.current_audio_mime)
-            with col2:
-                if st.button("🔊 Play Question"):
-                    st.rerun()
-            if st.button("Regenerate Question Audio"):
-                try:
-                    audio_bytes, mime_type = text_to_speech(st.session_state.current_question)
-                    dbg = debug_print_tts(audio_bytes, label="Regenerated Q TTS")
-                    if audio_bytes and len(audio_bytes) > 0:
-                        st.session_state.current_audio = audio_bytes
-                        st.session_state.current_audio_mime = mime_type
-                        st.success(f"Audio regenerated successfully. {dbg}")
-                    else:
-                        st.warning(f"No audio returned. {dbg}")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error regenerating audio: {e}")
-        if credentials is not None:
-            st.write("---")
-            st.write("**Speak your answer:**")
-            st.write("Click the record button to start recording your answer. The recording will continue until you press the stop button.")
-            audio_bytes = audio_recorder(
-                pause_threshold=2.0,
-                recording_color="#FF5733",
-                neutral_color="#6aa36f",
-                energy_threshold=0.01,
-            )
-            if audio_bytes:
-                st.success("Recording captured!")
-                with st.spinner("Transcribing your speech..."):
-                    transcript = transcribe_audio(audio_bytes)
-                    st.session_state.current_transcript = transcript
-                    st.write(f"**Transcribed:** {transcript}")
-        else:
-            st.info("Voice recording not available (no credentials). Please type your response below.")
-            st.session_state.current_transcript = ""
-        user_answer = st.text_area(
-            "Your response (edit transcription or type):", 
-            value=st.session_state.get("current_transcript", ""),
-            key=f"user_input_{len(st.session_state.conversation)}"
+
+    # Display the current question and auto-play the corresponding audio if available
+    st.markdown(f"**AI Question:** {st.session_state.current_question}")
+    if "current_audio" in st.session_state and st.session_state.current_audio:
+        st.caption(f"(Audio question will play automatically. Length = {len(st.session_state.current_audio)} bytes)")
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.markdown(get_autoplay_audio_html(st.session_state.current_audio, st.session_state.current_audio_mime), unsafe_allow_html=True)
+            st.audio(st.session_state.current_audio, format=st.session_state.current_audio_mime)
+        with col2:
+            if st.button("🔊 Play Question"):
+                st.rerun()
+
+    # --- Recording section ---
+    if credentials is not None:
+        st.write("---")
+        st.write("**Record your answer:**")
+        st.write("Press **Record Answer** (green mic) to start recording and **Stop Recording Answer** (red mic) to finish.")
+        audio_bytes = audio_recorder(
+            pause_threshold=2.0,
+            recording_color="#FF5733",
+            neutral_color="#6aa36f",
+            energy_threshold=0.01,
         )
-        user_rating = st.radio(
-            "On a scale of 1–10, how would you rate your experience relating to the current question/topic?",
-            options=[1,2,3,4,5,6,7,8,9,10],
-            index=4
-        )
-        completed_questions = len([entry for entry in st.session_state.conversation if entry['role'] == "user"])
-        progress_percentage = min(completed_questions / total_questions, 1.0)
-        st.write(f"**Interview Progress: {completed_questions} out of {total_questions} questions answered**")
-        st.progress(progress_percentage)
-        if st.button("Submit Answer"):
-            if user_answer.strip():
-                combined_user_content = f"Answer: {user_answer}\nRating: {user_rating}"
+        if audio_bytes:
+            st.success("Recording captured!")
+            with st.spinner("Transcribing your speech..."):
+                transcript = transcribe_audio(audio_bytes)
+                st.session_state.current_transcript = transcript
+                st.write(f"**Transcribed:** {transcript}")
+            if transcript.strip():
+                # Auto-submit the answer with a default rating of 5
+                combined_user_content = f"Answer: {transcript}\nRating: 5"
                 st.session_state.conversation.append({"role": "user", "content": combined_user_content})
-                ai_prompt = (
-                    f"User's answer: {user_answer}\n"
-                    f"User's rating: {user_rating}\n"
-                    "Provide feedback and ask a follow-up question."
-                )
+                ai_prompt = f"User's answer: {transcript}\nUser's rating: 5\nProvide feedback and ask a follow-up question."
                 ai_response = generate_response(ai_prompt, st.session_state.conversation)
                 st.session_state.conversation.append({"role": "assistant", "content": ai_response})
                 st.session_state.current_question = ai_response
@@ -433,26 +345,58 @@ def main():
                         st.warning(f"Unable to generate speech: {e}")
                         st.session_state.current_audio = None
                         st.session_state.current_audio_mime = None
-                st.session_state.current_transcript = ""
-                st.rerun()
+                st.experimental_rerun()
+    else:
+        # Manual text-based answer submission if audio recording is not available
+        user_answer = st.text_area("Your response (edit transcription or type):", 
+                                   value=st.session_state.get("current_transcript", ""), key="user_input")
+        selected_rating = st.radio("On a scale of 1–10, how would you rate your experience?",
+                                   options=list(range(1, 11)), index=4)
+        if st.button("Submit Answer"):
+            if user_answer.strip():
+                combined_user_content = f"Answer: {user_answer}\nRating: {selected_rating}"
+                st.session_state.conversation.append({"role": "user", "content": combined_user_content})
+                ai_prompt = f"User's answer: {user_answer}\nUser's rating: {selected_rating}\nProvide feedback and ask a follow-up question."
+                ai_response = generate_response(ai_prompt, st.session_state.conversation)
+                st.session_state.conversation.append({"role": "assistant", "content": ai_response})
+                st.session_state.current_question = ai_response
+                if credentials is not None:
+                    try:
+                        next_audio, mime_type = text_to_speech(ai_response)
+                        dbg = debug_print_tts(next_audio, label="Follow-up TTS")
+                        if next_audio and len(next_audio) > 0:
+                            st.session_state.current_audio = next_audio
+                            st.session_state.current_audio_mime = mime_type
+                        else:
+                            st.warning(f"Failed to generate audio for follow-up. {dbg}")
+                            st.session_state.current_audio = None
+                            st.session_state.current_audio_mime = None
+                    except Exception as e:
+                        st.warning(f"Unable to generate speech: {e}")
+                        st.session_state.current_audio = None
+                        st.session_state.current_audio_mime = None
+                st.experimental_rerun()
             else:
                 st.warning("Please provide an answer before submitting.")
-        if st.button("End Interview"):
-            st.success("Interview completed! Thank you for sharing your rugby taster session experience.")
-            st.session_state.current_question = "Interview ended"
-            transcript_md = convert_to_markdown(st.session_state.conversation)
-            if send_email(transcript_md):
-                st.info("Your transcript has been emailed to the researcher.")
-            st.markdown(get_transcript_download_link(st.session_state.conversation), unsafe_allow_html=True)
-        if st.checkbox("Show Interview Transcript"):
-            st.write("**Interview Transcript:**")
-            for entry in st.session_state.conversation:
-                st.write(f"**{entry['role'].capitalize()}:** {entry['content']}")
-                st.write("---")
-        if st.button("Restart Interview"):
-            for key in list(st.session_state.keys()):
-                del st.session_state[key]
-            st.rerun()
+
+    if st.button("End Interview"):
+        st.success("Interview completed! Thank you for sharing your rugby taster session experience.")
+        st.session_state.current_question = "Interview ended"
+        transcript_md = convert_to_markdown(st.session_state.conversation)
+        if send_email(transcript_md):
+            st.info("Your transcript has been emailed to the researcher.")
+        st.markdown(get_transcript_download_link(st.session_state.conversation), unsafe_allow_html=True)
+
+    if st.checkbox("Show Interview Transcript"):
+        st.write("**Interview Transcript:**")
+        for entry in st.session_state.conversation:
+            st.write(f"**{entry['role'].capitalize()}:** {entry['content']}")
+            st.write("---")
+
+    if st.button("Restart Interview"):
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        st.experimental_rerun()
 
 if __name__ == "__main__":
     main()
