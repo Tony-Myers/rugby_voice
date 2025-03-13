@@ -34,6 +34,7 @@ SENDER_EMAIL = st.secrets.get("sender_email", None)
 EMAIL_PASSWORD = st.secrets.get("email_password", None)
 RECEIVER_EMAIL = "tony.myers@staff.newman.ac.uk"
 
+# Check for missing secrets
 missing_secrets = []
 if not PASSWORD:
     missing_secrets.append("password")
@@ -97,7 +98,6 @@ def get_autoplay_audio_html(audio_bytes, mime_type):
     if audio_bytes is None:
         return ""
     b64 = base64.b64encode(audio_bytes).decode()
-    # Use a unique id to force re-render and auto-play
     element_id = f"audio_{int(time.time()*1000)}"
     html_str = f'''
     <audio id="{element_id}" controls autoplay>
@@ -144,7 +144,7 @@ def transcribe_audio(audio_bytes):
         tmp_file_path = tmp_file.name
     try:
         print(f"Audio file size: {len(audio_bytes)} bytes")
-        # Load audio and force conversion to mono and 16,000 Hz sample rate
+        # Load audio, convert to mono, and set sample rate to 16,000 Hz
         sound = AudioSegment.from_file(tmp_file_path, format="wav")
         mono_audio = sound.set_channels(1).set_frame_rate(16000)
         buffer = io.BytesIO()
@@ -218,3 +218,162 @@ def text_to_speech(text):
             print(f"TTS error with {mime_type}: {str(e)}")
     return None, None
 
+def generate_response(prompt, conversation_history=None):
+    try:
+        if conversation_history is None:
+            conversation_history = []
+        system_content = (
+            "You are an experienced and considerate interviewer focusing on young people's experiences with rugby taster sessions aimed at diversifying the participation base. "
+            "Use British English in your responses (e.g., 'democratised'). "
+            "Ensure your responses are complete and not truncated. After each user response, provide brief feedback and ask a relevant follow-up question based on their answer. "
+            "Tailor your questions to the user's previous responses, avoiding repetition and exploring areas they have not covered. Be adaptive and create a natural flow of conversation."
+        )
+        messages = [
+            {"role": "system", "content": system_content},
+            {"role": "system", "content": f"Interview topics: {interview_topics}"},
+            *conversation_history[-6:],
+            {"role": "user", "content": prompt}
+        ]
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=messages,
+            max_tokens=110,
+            n=1,
+            temperature=0.6,
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"An error occurred in generate_response: {str(e)}"
+
+def convert_to_markdown(conversation):
+    md_text = "# Rugby Taster Session Interview Transcript\n\n"
+    for entry in conversation:
+        role = entry["role"].capitalize()
+        content = entry["content"]
+        md_text += f"**{role}**: {content}\n\n---\n\n"
+    return md_text
+
+def get_transcript_download_link(conversation):
+    md_text = convert_to_markdown(conversation)
+    b64 = base64.b64encode(md_text.encode()).decode()
+    href = f'<a href="data:text/markdown;base64,{b64}" download="interview_transcript.md">Download Transcript</a>'
+    return href
+
+def main():
+    # Authentication section
+    if "authenticated" not in st.session_state:
+        st.session_state["authenticated"] = False
+    if not st.session_state["authenticated"]:
+        password = st.text_input("Enter password to access the interview app:", type="password")
+        if st.button("Submit"):
+            if password == PASSWORD:
+                st.session_state["authenticated"] = True
+                st.success("Access granted.")
+            else:
+                st.error("Incorrect password.")
+        st.stop()  # Prevent further execution until authenticated
+
+    st.title("Rugby Taster Session Voice Interview Bot")
+    if credentials is None:
+        st.warning("Google Cloud Speech services are not configured. Voice features will not be available.")
+
+    if "conversation" not in st.session_state:
+        st.session_state["conversation"] = []
+    if "current_question" not in st.session_state:
+        st.session_state["current_question"] = (
+            "Thank you for agreeing to speak with us about your recent rugby taster session. "
+            "To begin, can you tell me a bit about yourself and any previous experience with rugby or other sports?"
+        )
+        if credentials is not None:
+            st.write("Attempting TTS for initial question...")
+            try:
+                audio_bytes, mime_type = text_to_speech(st.session_state["current_question"])
+                dbg = debug_print_tts(audio_bytes, label="Initial Q TTS")
+                if audio_bytes and len(audio_bytes) > 0:
+                    st.session_state["current_audio"] = audio_bytes
+                    st.session_state["current_audio_mime"] = mime_type
+                    st.success("Initial question audio generated successfully.")
+                else:
+                    st.warning(f"No audio returned for the initial question. Debug: {dbg}")
+                    st.session_state["current_audio"] = None
+                    st.session_state["current_audio_mime"] = None
+            except Exception as e:
+                st.warning(f"Unable to generate speech for initial question: {e}")
+                st.session_state["current_audio"] = None
+                st.session_state["current_audio_mime"] = None
+
+    # Display current question and autoplay its audio if available
+    st.markdown(f"**AI Question:** {st.session_state['current_question']}")
+    if "current_audio" in st.session_state and st.session_state["current_audio"]:
+        st.caption(f"(Audio question will play automatically. Length = {len(st.session_state['current_audio'])} bytes)")
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.components.v1.html(get_autoplay_audio_html(st.session_state["current_audio"], st.session_state["current_audio_mime"]), height=80)
+        with col2:
+            if st.button("🔊 Play Question"):
+                st.experimental_rerun()
+
+    # --- Recording section ---
+    if credentials is not None:
+        st.write("---")
+        st.write("**Record your answer:**")
+        st.write("Press **Record Answer** (green mic) to start and **Stop Recording Answer** (red mic) to finish.")
+        audio_bytes = audio_recorder(
+            pause_threshold=5.0,  # increased threshold to allow longer pauses
+            recording_color="#FF5733",
+            neutral_color="#6aa36f",
+            energy_threshold=0.01,
+        )
+        if audio_bytes:
+            st.success("Recording captured!")
+            with st.spinner("Transcribing your speech..."):
+                transcript = transcribe_audio(audio_bytes)
+                st.session_state["current_transcript"] = transcript
+                st.write(f"**Transcribed:** {transcript}")
+            if transcript.strip():
+                combined_user_content = f"Answer: {transcript}\nRating: 5"
+                st.session_state["conversation"].append({"role": "user", "content": combined_user_content})
+                ai_prompt = f"User's answer: {transcript}\nUser's rating: 5\nProvide feedback and ask a follow-up question."
+                ai_response = generate_response(ai_prompt, st.session_state["conversation"])
+                st.session_state["conversation"].append({"role": "assistant", "content": ai_response})
+                st.session_state["current_question"] = ai_response
+                if credentials is not None:
+                    try:
+                        next_audio, mime_type = text_to_speech(ai_response)
+                        dbg = debug_print_tts(next_audio, label="Follow-up TTS")
+                        if next_audio and len(next_audio) > 0:
+                            st.session_state["current_audio"] = next_audio
+                            st.session_state["current_audio_mime"] = mime_type
+                        else:
+                            st.warning(f"Failed to generate audio for follow-up. {dbg}")
+                            st.session_state["current_audio"] = None
+                            st.session_state["current_audio_mime"] = None
+                    except Exception as e:
+                        st.warning(f"Unable to generate speech: {e}")
+                        st.session_state["current_audio"] = None
+                        st.session_state["current_audio_mime"] = None
+                st.experimental_rerun()
+    else:
+        user_answer = st.text_area("Your response (edit transcription or type):", 
+                                   value=st.session_state.get("current_transcript", ""), key="user_input")
+        selected_rating = st.radio("On a scale of 1–10, how would you rate your experience?",
+                                   options=list(range(1, 11)), index=4)
+        if st.button("Submit Answer"):
+            if user_answer.strip():
+                combined_user_content = f"Answer: {user_answer}\nRating: {selected_rating}"
+                st.session_state["conversation"].append({"role": "user", "content": combined_user_content})
+                ai_prompt = f"User's answer: {user_answer}\nUser's rating: {selected_rating}\nProvide feedback and ask a follow-up question."
+                ai_response = generate_response(ai_prompt, st.session_state["conversation"])
+                st.session_state["conversation"].append({"role": "assistant", "content": ai_response})
+                st.session_state["current_question"] = ai_response
+                if credentials is not None:
+                    try:
+                        next_audio, mime_type = text_to_speech(ai_response)
+                        dbg = debug_print_tts(next_audio, label="Follow-up TTS")
+                        if next_audio and len(next_audio) > 0:
+                            st.session_state["current_audio"] = next_audio
+                            st.session_state["current_audio_mime"] = mime_type
+                        else:
+                            st.warning(f"Failed to generate audio for follow-up. {dbg}")
+                            st.session_state["current_audio"] =
