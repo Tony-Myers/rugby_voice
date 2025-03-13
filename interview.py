@@ -34,7 +34,6 @@ SENDER_EMAIL = st.secrets.get("sender_email", None)
 EMAIL_PASSWORD = st.secrets.get("email_password", None)
 RECEIVER_EMAIL = "tony.myers@staff.newman.ac.uk"
 
-# Check for missing secrets
 missing_secrets = []
 if not PASSWORD:
     missing_secrets.append("password")
@@ -144,7 +143,6 @@ def transcribe_audio(audio_bytes):
         tmp_file_path = tmp_file.name
     try:
         print(f"Audio file size: {len(audio_bytes)} bytes")
-        # Load audio, convert to mono, and set sample rate to 16,000 Hz
         sound = AudioSegment.from_file(tmp_file_path, format="wav")
         mono_audio = sound.set_channels(1).set_frame_rate(16000)
         buffer = io.BytesIO()
@@ -261,7 +259,7 @@ def get_transcript_download_link(conversation):
     return href
 
 def main():
-    # Authentication section
+    # Authentication: display password input and stop further execution if not authenticated.
     if "authenticated" not in st.session_state:
         st.session_state["authenticated"] = False
     if not st.session_state["authenticated"]:
@@ -272,12 +270,11 @@ def main():
                 st.success("Access granted.")
             else:
                 st.error("Incorrect password.")
-        st.stop()  # Prevent further execution until authenticated
+        st.stop()
 
     st.title("Rugby Taster Session Voice Interview Bot")
     if credentials is None:
         st.warning("Google Cloud Speech services are not configured. Voice features will not be available.")
-
     if "conversation" not in st.session_state:
         st.session_state["conversation"] = []
     if "current_question" not in st.session_state:
@@ -303,13 +300,14 @@ def main():
                 st.session_state["current_audio"] = None
                 st.session_state["current_audio_mime"] = None
 
-    # Display current question and autoplay its audio if available
     st.markdown(f"**AI Question:** {st.session_state['current_question']}")
     if "current_audio" in st.session_state and st.session_state["current_audio"]:
         st.caption(f"(Audio question will play automatically. Length = {len(st.session_state['current_audio'])} bytes)")
         col1, col2 = st.columns([3, 1])
         with col1:
-            st.components.v1.html(get_autoplay_audio_html(st.session_state["current_audio"], st.session_state["current_audio_mime"]), height=80)
+            st.components.v1.html(get_autoplay_audio_html(st.session_state["current_audio"],
+                                                            st.session_state["current_audio_mime"]),
+                                    height=80)
         with col2:
             if st.button("🔊 Play Question"):
                 st.experimental_rerun()
@@ -320,7 +318,7 @@ def main():
         st.write("**Record your answer:**")
         st.write("Press **Record Answer** (green mic) to start and **Stop Recording Answer** (red mic) to finish.")
         audio_bytes = audio_recorder(
-            pause_threshold=5.0,  # increased threshold to allow longer pauses
+            pause_threshold=5.0,
             recording_color="#FF5733",
             neutral_color="#6aa36f",
             energy_threshold=0.01,
@@ -355,7 +353,7 @@ def main():
                         st.session_state["current_audio_mime"] = None
                 st.experimental_rerun()
     else:
-        user_answer = st.text_area("Your response (edit transcription or type):", 
+        user_answer = st.text_area("Your response (edit transcription or type):",
                                    value=st.session_state.get("current_transcript", ""), key="user_input")
         selected_rating = st.radio("On a scale of 1–10, how would you rate your experience?",
                                    options=list(range(1, 11)), index=4)
@@ -376,4 +374,34 @@ def main():
                             st.session_state["current_audio_mime"] = mime_type
                         else:
                             st.warning(f"Failed to generate audio for follow-up. {dbg}")
-                            st.session_state["current_audio"] =
+                            st.session_state["current_audio"] = None
+                            st.session_state["current_audio_mime"] = None
+                    except Exception as e:
+                        st.warning(f"Unable to generate speech: {e}")
+                        st.session_state["current_audio"] = None
+                        st.session_state["current_audio_mime"] = None
+                st.experimental_rerun()
+            else:
+                st.warning("Please provide an answer before submitting.")
+
+    if st.button("End Interview"):
+        st.success("Interview completed! Thank you for sharing your rugby taster session experience.")
+        st.session_state["current_question"] = "Interview ended"
+        transcript_md = convert_to_markdown(st.session_state["conversation"])
+        if send_email(transcript_md):
+            st.info("Your transcript has been emailed to the researcher.")
+        st.markdown(get_transcript_download_link(st.session_state["conversation"]), unsafe_allow_html=True)
+
+    if st.checkbox("Show Interview Transcript"):
+        st.write("**Interview Transcript:**")
+        for entry in st.session_state["conversation"]:
+            st.write(f"**{entry['role'].capitalize()}:** {entry['content']}")
+            st.write("---")
+
+    if st.button("Restart Interview"):
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        st.experimental_rerun()
+
+if __name__ == "__main__":
+    main()
