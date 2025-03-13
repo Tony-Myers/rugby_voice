@@ -111,7 +111,7 @@ def get_autoplay_audio_html(audio_bytes, mime_type):
         <source src="{audio_src}" type="{mime_type}">
         Your browser does not support the audio element.
     </audio>
-
+    
 def send_email(transcript_md):
     subject = "Interview Transcript"
     body = "Please find attached the interview transcript."
