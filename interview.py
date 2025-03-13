@@ -315,7 +315,7 @@ def main():
                                     height=80)
         with col2:
             if st.button("🔊 Play Question"):
-                st.experimental_rerun()
+                st.rerun()
 
     # --- Recording section ---
     if credentials is not None:
@@ -357,7 +357,7 @@ def main():
                         st.warning(f"Unable to generate speech: {e}")
                         st.session_state["current_audio"] = None
                         st.session_state["current_audio_mime"] = None
-                st.experimental_rerun()
+                st.rerun()
     else:
         user_answer = st.text_area("Your response (edit transcription or type):",
                                    value=st.session_state.get("current_transcript", ""), key="user_input")
@@ -386,7 +386,7 @@ def main():
                         st.warning(f"Unable to generate speech: {e}")
                         st.session_state["current_audio"] = None
                         st.session_state["current_audio_mime"] = None
-                st.experimental_rerun()
+                st.rerun()
             else:
                 st.warning("Please provide an answer before submitting.")
 
@@ -407,7 +407,7 @@ def main():
     if st.button("Restart Interview"):
         for key in list(st.session_state.keys()):
             del st.session_state[key]
-        st.experimental_rerun()
+        st.rerun()
 
 if __name__ == "__main__":
     main()
