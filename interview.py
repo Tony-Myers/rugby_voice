@@ -345,7 +345,7 @@ def main():
                         st.warning(f"Unable to generate speech: {e}")
                         st.session_state.current_audio = None
                         st.session_state.current_audio_mime = None
-                st.rerun()
+                st.experimental_rerun()
     else:
         # Manual text-based answer submission if audio recording is not available
         user_answer = st.text_area("Your response (edit transcription or type):", 
@@ -375,7 +375,7 @@ def main():
                         st.warning(f"Unable to generate speech: {e}")
                         st.session_state.current_audio = None
                         st.session_state.current_audio_mime = None
-                st.rerun()
+                st.experimental_rerun()
             else:
                 st.warning("Please provide an answer before submitting.")
 
@@ -396,7 +396,8 @@ def main():
     if st.button("Restart Interview"):
         for key in list(st.session_state.keys()):
             del st.session_state[key]
-        st.rerun()
+        st.experimental_rerun()
 
 if __name__ == "__main__":
     main()
+
