@@ -264,7 +264,6 @@ def get_transcript_download_link(conversation):
     href = f'<a href="data:text/markdown;base64,{b64}" download="interview_transcript.md">Download Transcript</a>'
     return href
 
-
 def main():
     # Authentication block
     if "authenticated" not in st.session_state:
@@ -279,7 +278,7 @@ def main():
                 st.error("Incorrect password.")
         st.stop()
 
-    ### CHANGES START: Add a consent page after successful password ###
+    # Consent page
     if "consent_obtained" not in st.session_state:
         st.session_state["consent_obtained"] = False
 
@@ -300,7 +299,6 @@ def main():
             st.rerun()
         else:
             st.stop()
-    ### CHANGES END ###
 
     st.title("Rugby Taster Session Voice Interview Bot")
     if credentials is None:
@@ -337,30 +335,29 @@ def main():
                 st.session_state["current_audio"] = None
                 st.session_state["current_audio_mime"] = None
 
-    ### CHANGES START: Display and autoplay the AI question immediately ###
+    # --- CHANGES START: Display and autoplay the AI question immediately ---
     st.markdown(f"**AI Question:** {st.session_state['current_question']}")
     if "current_audio" in st.session_state and st.session_state["current_audio"]:
         st.components.v1.html(
             get_autoplay_audio_html(st.session_state["current_audio"], st.session_state["current_audio_mime"]),
             height=80
         )
-    ### CHANGES END ###
+    # --- CHANGES END ---
 
     # Recording section
     if st.session_state["phase"] == "ready_for_question":
         st.write("---")
-        st.write("**Record your answer:**")
-        ### CHANGES START: Make the record/stop button text clearer ###
-        st.write("Press the green button to **Start Recording** and press the same button (now red) to **Stop Recording**.")
+        st.write("Please allow access to your microphone if prompted.")
+        st.write("Press the button to **Start Recording** (it will turn red), and press the same button to **Stop Recording**.")
+        # --- CHANGES START: Clearer record/stop text ---
         audio_bytes = audio_recorder(
             pause_threshold=9999,
             recording_color="#FF5733",
             neutral_color="#6aa36f",
-            # The label text shown on the button
-            text="Click to Record / Stop Recording",
+            text="Press to START or STOP recording",
             energy_threshold=0.01,
         )
-        ### CHANGES END ###
+        # --- CHANGES END ---
 
         if audio_bytes:
             try:
@@ -376,10 +373,9 @@ def main():
 
                     # Store user response in conversation
                     st.session_state["conversation"].append({"role": "user", "content": transcript})
-                    # As soon as user response is captured, move to rating phase
-                    st.session_state["phase"] = "rating_requested"
 
-                    # Generate a TTS for the rating request
+                    # Move to rating phase automatically and generate TTS
+                    st.session_state["phase"] = "rating_requested"
                     rating_prompt = "Please provide a rating from 1 to 10 for your experience. Then press the 'Submit Rating' button."
                     audio_rating, rating_mime = text_to_speech(rating_prompt)
                     st.session_state["rating_audio"] = audio_rating
@@ -390,30 +386,28 @@ def main():
                 st.error(f"Error processing recorded audio: {e}")
 
     elif st.session_state["phase"] == "rating_requested":
-        ### CHANGES START: Automatically play the fixed standard question to request rating ###
+        # --- CHANGES START: Automatically play a fixed standard question to request rating ---
         if "rating_audio" in st.session_state and st.session_state["rating_audio"]:
             st.components.v1.html(
                 get_autoplay_audio_html(st.session_state["rating_audio"], st.session_state["rating_mime"]),
                 height=80
             )
-        st.write("**Please provide a rating from 1 to 10, then press 'Submit Rating'.**")
-        ### CHANGES END ###
+        st.write("Please provide a rating from 1 to 10, then press 'Submit Rating'.")
+        # --- CHANGES END ---
 
         if "user_rating" not in st.session_state:
             st.session_state["user_rating"] = 5  # default
 
         st.session_state["user_rating"] = st.slider("Your rating:", 1, 10, st.session_state["user_rating"])
         if st.button("Submit Rating"):
-            # Combine user’s last answer with rating for context
-            last_answer = st.session_state["conversation"][-1]["content"]
+            # Add rating to conversation
             rating_val = st.session_state["user_rating"]
-            # Add rating to the conversation as well (not combining into same user message).
-            # But we do want the AI to see it. So we can create a new 'user' turn indicating rating.
             st.session_state["conversation"].append(
                 {"role": "user", "content": f"Rating provided: {rating_val}"}
             )
 
-            # Now get AI follow-up
+            # Generate AI follow-up
+            last_answer = st.session_state["conversation"][-2]["content"]  # user's last full response
             ai_prompt = (
                 f"User's last answer: {last_answer}\n"
                 f"User's rating: {rating_val}\n"
@@ -422,7 +416,7 @@ def main():
             ai_response = generate_response(ai_prompt, st.session_state["conversation"])
             st.session_state["conversation"].append({"role": "assistant", "content": ai_response})
 
-            # Set up for next question
+            # Prepare TTS for AI question
             st.session_state["current_question"] = ai_response
             if credentials is not None:
                 try:
@@ -432,7 +426,7 @@ def main():
                         st.session_state["current_audio"] = next_audio
                         st.session_state["current_audio_mime"] = mime_type
                     else:
-                        st.warning(f"Failed to generate audio for follow-up. {dbg}")
+                        st.warning(f"Failed to generate audio for follow-up question. {dbg}")
                         st.session_state["current_audio"] = None
                         st.session_state["current_audio_mime"] = None
                 except Exception as e:
@@ -440,7 +434,7 @@ def main():
                     st.session_state["current_audio"] = None
                     st.session_state["current_audio_mime"] = None
 
-            # Go back to "ready_for_question" phase
+            # Go back to "ready_for_question"
             st.session_state["phase"] = "ready_for_question"
             st.rerun()
 
