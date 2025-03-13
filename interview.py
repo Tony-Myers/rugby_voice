@@ -34,6 +34,7 @@ SENDER_EMAIL = st.secrets.get("sender_email", None)
 EMAIL_PASSWORD = st.secrets.get("email_password", None)
 RECEIVER_EMAIL = "tony.myers@staff.newman.ac.uk"
 
+# Check for missing secrets
 missing_secrets = []
 if not PASSWORD:
     missing_secrets.append("password")
@@ -97,6 +98,7 @@ def get_autoplay_audio_html(audio_bytes, mime_type):
     if audio_bytes is None:
         return ""
     b64 = base64.b64encode(audio_bytes).decode()
+    # Generate a unique id and add a 500ms delay before play
     element_id = f"audio_{int(time.time()*1000)}"
     html_str = f'''
     <audio id="{element_id}" controls autoplay>
@@ -104,10 +106,12 @@ def get_autoplay_audio_html(audio_bytes, mime_type):
         Your browser does not support the audio element.
     </audio>
     <script>
-        var audioElem = document.getElementById("{element_id}");
-        if(audioElem) {{
-            audioElem.play();
-        }}
+        setTimeout(function() {{
+            var audioElem = document.getElementById("{element_id}");
+            if (audioElem) {{
+                audioElem.play();
+            }}
+        }}, 500);
     </script>
     '''
     return html_str
@@ -143,6 +147,7 @@ def transcribe_audio(audio_bytes):
         tmp_file_path = tmp_file.name
     try:
         print(f"Audio file size: {len(audio_bytes)} bytes")
+        # Convert to mono and force sample rate 16,000 Hz
         sound = AudioSegment.from_file(tmp_file_path, format="wav")
         mono_audio = sound.set_channels(1).set_frame_rate(16000)
         buffer = io.BytesIO()
@@ -259,7 +264,7 @@ def get_transcript_download_link(conversation):
     return href
 
 def main():
-    # Authentication: display password input and stop further execution if not authenticated.
+    # Authentication block
     if "authenticated" not in st.session_state:
         st.session_state["authenticated"] = False
     if not st.session_state["authenticated"]:
@@ -317,8 +322,9 @@ def main():
         st.write("---")
         st.write("**Record your answer:**")
         st.write("Press **Record Answer** (green mic) to start and **Stop Recording Answer** (red mic) to finish.")
+        # Set a very high pause_threshold to force manual stopping
         audio_bytes = audio_recorder(
-            pause_threshold=5.0,
+            pause_threshold=9999,
             recording_color="#FF5733",
             neutral_color="#6aa36f",
             energy_threshold=0.01,
