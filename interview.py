@@ -67,10 +67,8 @@ def clean_json_string(json_str):
     """Clean a JSON string that may contain invalid control characters."""
     # Replace literal \n with actual newlines (helps with private key formatting)
     json_str = json_str.replace("\\n", "\n")
-    
     # Remove any non-printable characters except valid whitespace
     json_str = re.sub(r'[\x00-\x09\x0b\x0c\x0e-\x1f\x7f]', '', json_str)
-    
     return json_str
 
 # --- Setup Google Cloud credentials ---
@@ -78,14 +76,11 @@ credentials = None
 if "google_credentials" in st.secrets:
     try:
         creds_raw = st.secrets["google_credentials"]
-        # Print first few characters to debug (don't print the whole thing for security)
         print(f"Credential string starts with: {creds_raw[:20]}..." if isinstance(creds_raw, str) else "Credentials are not a string")
-        
         if isinstance(creds_raw, str):
             creds_raw = clean_json_string(creds_raw)
             try:
                 creds_dict = json.loads(creds_raw)
-                # Check for required fields in service account credentials
                 required_fields = ["type", "project_id", "private_key_id", "private_key", "client_email"]
                 missing_fields = [field for field in required_fields if field not in creds_dict]
                 if missing_fields:
@@ -105,86 +100,182 @@ if "google_credentials" in st.secrets:
         st.warning(f"Error loading Google Cloud credentials: {type(e).__name__}: {str(e)}")
         print(f"Credential error details: {str(e)}")
 
-def verify_google_apis():
-    """Verify that the required Google APIs are enabled and accessible."""
-    if credentials is None:
-        return "No credentials available"
+def get_autoplay_audio_html(audio_bytes, mime_type):
+    """Create an HTML audio element with autoplay enabled."""
+    if audio_bytes is None:
+        return ""
+    b64 = base64.b64encode(audio_bytes).decode()
+    audio_src = f"data:{mime_type};base64,{b64}"
+    return f"""
+    <audio autoplay="true" controls>
+        <source src="{audio_src}" type="{mime_type}">
+        Your browser does not support the audio element.
+    </audio>
+
+def send_email(transcript_md):
+    subject = "Interview Transcript"
+    body = "Please find attached the interview transcript."
     
-    results = []
-    # Test Text-to-Speech
+    message = MIMEMultipart()
+    message["From"] = SENDER_EMAIL
+    message["To"] = RECEIVER_EMAIL
+    message["Subject"] = subject
+    message.attach(MIMEText(body, "plain"))
+
+    attachment_part = MIMEText(transcript_md, "plain")
+    attachment_part.add_header(
+        "Content-Disposition",
+        "attachment",
+        filename="interview_transcript.md"
+    )
+    message.attach(attachment_part)
+
+    context = ssl.create_default_context()
     try:
-        tts_client = texttospeech.TextToSpeechClient(credentials=credentials)
-        voices = tts_client.list_voices()
-        results.append("✅ Text-to-Speech API is accessible")
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
+            server.login(SENDER_EMAIL, EMAIL_PASSWORD)
+            server.sendmail(SENDER_EMAIL, RECEIVER_EMAIL, message.as_string())
+        return True
     except Exception as e:
-        results.append(f"❌ Text-to-Speech API error: {str(e)}")
+        st.error(f"Error sending email: {str(e)}")
+        return False
+
+def transcribe_audio(audio_bytes):
+    """Transcribe audio using Google Cloud Speech-to-Text."""
+    if credentials is None:
+        st.warning("Speech-to-text unavailable. Please type your response instead.")
+        return "Voice transcription unavailable. Please type your response."
     
-    # Test Speech-to-Text
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
+        tmp_file.write(audio_bytes)
+        tmp_file_path = tmp_file.name
+    
     try:
-        speech_client = speech.SpeechClient(credentials=credentials)
+        print(f"Audio file size: {len(audio_bytes)} bytes")
+        # Convert the audio to mono using pydub (if needed) and try different sample rates
+        sound = AudioSegment.from_file(tmp_file_path, format="wav")
+        sound_mono = sound.set_channels(1)
+        sample_rates = [16000, 44100, 48000]
+        
+        client = speech.SpeechClient(credentials=credentials)
+        transcript = ""
+        for rate in sample_rates:
+            try:
+                print(f"Converting audio to {rate}Hz sample rate")
+                sound_converted = sound_mono.set_frame_rate(rate)
+                converted_path = f"{tmp_file_path}_{rate}.wav"
+                sound_converted.export(converted_path, format="wav")
+                with open(converted_path, "rb") as audio_file:
+                    content = audio_file.read()
+                audio = speech.RecognitionAudio(content=content)
+                # Try both LINEAR16 and auto-detection encoding
+                for encoding in [speech.RecognitionConfig.AudioEncoding.LINEAR16, speech.RecognitionConfig.AudioEncoding.ENCODING_UNSPECIFIED]:
+                    config = speech.RecognitionConfig(
+                        encoding=encoding,
+                        sample_rate_hertz=rate,
+                        language_code="en-GB",
+                        enable_automatic_punctuation=True,
+                        model="default",
+                        use_enhanced=True
+                    )
+                    try:
+                        print(f"Attempting transcription with {rate}Hz and encoding {encoding}")
+                        response = client.recognize(config=config, audio=audio)
+                        for result in response.results:
+                            transcript += result.alternatives[0].transcript
+                        if transcript.strip():
+                            print(f"Successfully transcribed with {rate}Hz and encoding {encoding}")
+                            return transcript.strip()
+                    except Exception as e:
+                        print(f"Failed with {rate}Hz and encoding {encoding}: {e}")
+            except Exception as rate_error:
+                print(f"Error converting to {rate}Hz: {rate_error}")
+        
+        # Final fallback: try with original audio
+        print("Trying transcription with original audio file")
+        with open(tmp_file_path, "rb") as audio_file:
+            content = audio_file.read()
+        audio = speech.RecognitionAudio(content=content)
         config = speech.RecognitionConfig(
             encoding=speech.RecognitionConfig.AudioEncoding.ENCODING_UNSPECIFIED,
-            sample_rate_hertz=16000,
             language_code="en-GB",
+            enable_automatic_punctuation=True,
+            model="default",
+            use_enhanced=True
         )
-        results.append("✅ Speech-to-Text API is accessible")
+        response = client.recognize(config=config, audio=audio)
+        for result in response.results:
+            transcript += result.alternatives[0].transcript
+        if transcript.strip():
+            return transcript.strip()
+        else:
+            return "Could not transcribe audio. Please type your response."
     except Exception as e:
-        results.append(f"❌ Speech-to-Text API error: {str(e)}")
-    
-    return "\n".join(results)
+        st.error(f"Error in speech recognition: {e}")
+        return f"Error: {str(e)}"
+    finally:
+        if os.path.exists(tmp_file_path):
+            os.unlink(tmp_file_path)
+        for rate in [16000, 44100, 48000]:
+            converted_path = f"{tmp_file_path}_{rate}.wav"
+            if os.path.exists(converted_path):
+                os.unlink(converted_path)
 
-def generate_test_audio():
-    """Generate a simple test tone to verify audio playback."""
-    try:
-        # Generate a simple sine wave
-        sample_rate = 44100
-        seconds = 2
-        t = np.linspace(0, seconds, int(seconds * sample_rate), False)
-        tone = np.sin(440 * 2 * np.pi * t)  # 440 Hz sine wave
-        audio = tone * (2**15 - 1) / np.max(np.abs(tone))  # Normalize to 16-bit range
-        audio = audio.astype(np.int16)
-        
-        # Convert to bytes
-        buffer = io.BytesIO()
-        # Use wavio if available, otherwise use a simpler approach
+def debug_print_tts(audio_content, label="TTS debug"):
+    if audio_content is None:
+        print(f"{label}: No audio returned (None).")
+        return "0 bytes (No audio data)"
+    length = len(audio_content)
+    print(f"{label}: returned {length} bytes of audio.")
+    return f"{length} bytes of audio."
+
+def text_to_speech(text):
+    """Generate TTS audio with fallback formats."""
+    if credentials is None:
+        return None, None
+    
+    tts_client = texttospeech.TextToSpeechClient(credentials=credentials)
+    voice = texttospeech.VoiceSelectionParams(
+        language_code="en-GB",
+        ssml_gender=texttospeech.SsmlVoiceGender.NEUTRAL
+    )
+    formats_to_try = [
+        (texttospeech.AudioEncoding.LINEAR16, "audio/wav"),
+        (texttospeech.AudioEncoding.MP3, "audio/mp3"),
+        (texttospeech.AudioEncoding.OGG_OPUS, "audio/ogg")
+    ]
+    synthesis_input = texttospeech.SynthesisInput(text=text)
+    for encoding, mime_type in formats_to_try:
         try:
-            import scipy.io.wavfile as wavfile
-            wavfile.write(buffer, sample_rate, audio)
-        except ImportError:
-            # Simple WAV header for 16-bit mono PCM
-            # RIFF header
-            buffer.write(b'RIFF')
-            buffer.write((36 + len(audio) * 2).to_bytes(4, 'little'))  # File size
-            buffer.write(b'WAVE')
-            # Format chunk
-            buffer.write(b'fmt ')
-            buffer.write((16).to_bytes(4, 'little'))  # Chunk size
-            buffer.write((1).to_bytes(2, 'little'))  # PCM format
-            buffer.write((1).to_bytes(2, 'little'))  # Mono
-            buffer.write((sample_rate).to_bytes(4, 'little'))  # Sample rate
-            buffer.write((sample_rate * 2).to_bytes(4, 'little'))  # Byte rate
-            buffer.write((2).to_bytes(2, 'little'))  # Block align
-            buffer.write((16).to_bytes(2, 'little'))  # Bits per sample
-            # Data chunk
-            buffer.write(b'data')
-            buffer.write((len(audio) * 2).to_bytes(4, 'little'))  # Chunk size
-            buffer.write(audio.tobytes())
-        
-        buffer.seek(0)
-        audio_bytes = buffer.read()
-        
-        return audio_bytes
-    except Exception as e:
-        print(f"Error generating test audio: {e}")
-        return None
+            audio_config = texttospeech.AudioConfig(
+                audio_encoding=encoding,
+                speaking_rate=1.0,
+                pitch=0.0,
+                volume_gain_db=0.0
+            )
+            response = tts_client.synthesize_speech(
+                input=synthesis_input,
+                voice=voice,
+                audio_config=audio_config
+            )
+            if response.audio_content and len(response.audio_content) > 0:
+                print(f"TTS: Generated {len(response.audio_content)} bytes of {mime_type} audio.")
+                return response.audio_content, mime_type
+        except Exception as e:
+            print(f"TTS error with {mime_type}: {str(e)}")
+    return None, None
 
 def generate_response(prompt, conversation_history=None):
     try:
         if conversation_history is None:
             conversation_history = []
 
-        system_content = """You are an experienced and considerate interviewer focusing on young people's experiences with rugby taster sessions aimed at diversifying the participation base. Use British English in your responses (e.g., 'democratised'). 
-Ensure your responses are complete and not truncated. After each user response, provide brief feedback and ask a relevant follow-up question based on their answer. Tailor your questions to the user's previous responses, avoiding repetition and exploring areas they haven't covered. Be adaptive and create a natural flow of conversation."""
+        system_content = (
+            "You are an experienced and considerate interviewer focusing on young people's experiences with rugby taster sessions aimed at diversifying the participation base. "
+            "Use British English in your responses (e.g., 'democratised'). "
+            "Ensure your responses are complete and not truncated. After each user response, provide brief feedback and ask a relevant follow-up question based on their answer. "
+            "Tailor your questions to the user's previous responses, avoiding repetition and exploring areas they have not covered. Be adaptive and create a natural flow of conversation."
+        )
 
         messages = [
             {"role": "system", "content": system_content},
@@ -219,403 +310,6 @@ def get_transcript_download_link(conversation):
     href = f'<a href="data:text/markdown;base64,{b64}" download="interview_transcript.md">Download Transcript</a>'
     return href
 
-def get_audio_download_link(audio_bytes, mime_type, filename="audio.mp3"):
-    """Generate a download link for the audio file."""
-    if audio_bytes is None:
-        return ""
-    
-    b64 = base64.b64encode(audio_bytes).decode()
-    href = f'<a href="data:{mime_type};base64,{b64}" download="{filename}">Download Audio</a>'
-    return href
-
-def get_autoplay_audio_html(audio_bytes, mime_type):
-    """Create an HTML audio element with autoplay enabled."""
-    if audio_bytes is None:
-        return ""
-    
-    b64 = base64.b64encode(audio_bytes).decode()
-    audio_src = f"data:{mime_type};base64,{b64}"
-    return f"""
-    <audio autoplay="true" controls>
-        <source src="{audio_src}" type="{mime_type}">
-        Your browser does not support the audio element.
-    </audio>
-    """
-
-def send_email(transcript_md):
-    subject = "Interview Transcript"
-    body = "Please find attached the interview transcript."
-    
-    message = MIMEMultipart()
-    message["From"] = SENDER_EMAIL
-    message["To"] = RECEIVER_EMAIL
-    message["Subject"] = subject
-    message.attach(MIMEText(body, "plain"))
-
-    attachment_part = MIMEText(transcript_md, "plain")
-    attachment_part.add_header(
-        "Content-Disposition",
-        "attachment",
-        filename="interview_transcript.md"
-    )
-    message.attach(attachment_part)
-
-    context = ssl.create_default_context()
-    try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
-            server.login(SENDER_EMAIL, EMAIL_PASSWORD)
-            server.sendmail(SENDER_EMAIL, RECEIVER_EMAIL, message.as_string())
-        return True
-    except Exception as e:
-        st.error(f"Error sending email: {str(e)}")
-        return False
-
-def combine_audio_segments(audio_files):
-    """Combine multiple audio files into a single audio segment."""
-    if not audio_files:
-        return None
-    
-    if len(audio_files) == 1:
-        return audio_files[0]
-    
-    try:
-        # Create temporary files for each audio chunk
-        temp_files = []
-        for i, audio in enumerate(audio_files):
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-                tmp.write(audio)
-                temp_files.append(tmp.name)
-        
-        # Combine the audio segments
-        combined = AudioSegment.from_file(temp_files[0], format="wav")
-        for temp_file in temp_files[1:]:
-            segment = AudioSegment.from_file(temp_file, format="wav")
-            combined += segment
-        
-        # Export to a new temporary file
-        output_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
-        combined.export(output_file.name, format="wav")
-        
-        # Read the combined audio
-        with open(output_file.name, "rb") as f:
-            combined_audio = f.read()
-        
-        # Clean up temporary files
-        for file in temp_files + [output_file.name]:
-            if os.path.exists(file):
-                os.unlink(file)
-                
-        return combined_audio
-    except Exception as e:
-        print(f"Error combining audio segments: {e}")
-        # Fallback to the first audio file if combination fails
-        return audio_files[0]
-
-def transcribe_audio(audio_bytes):
-    """Enhanced voice transcription with multiple fallback methods."""
-    if credentials is None:
-        st.warning("Speech-to-text unavailable. Please type your response instead.")
-        return "Voice transcription unavailable. Please type your response."
-    
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
-        tmp_file.write(audio_bytes)
-        tmp_file_path = tmp_file.name
-    
-    try:
-        # Print debug info about the audio file
-        print(f"Audio file size: {len(audio_bytes)} bytes")
-        
-        # Try different approaches for audio conversion
-        try:
-            # First approach: Use pydub to normalize the audio
-            sound = AudioSegment.from_file(tmp_file_path, format="wav")
-            
-            # Get audio details for debugging
-            print(f"Original audio: channels={sound.channels}, sample_rate={sound.frame_rate}, sample_width={sound.sample_width}")
-            
-            # Convert to mono
-            sound_mono = sound.set_channels(1)
-            # Try different sample rates
-            sample_rates = [16000, 44100, 48000]
-            
-            for rate in sample_rates:
-                try:
-                    print(f"Converting audio to {rate}Hz sample rate")
-                    sound_converted = sound_mono.set_frame_rate(rate)
-                    converted_path = f"{tmp_file_path}_{rate}.wav"
-                    sound_converted.export(converted_path, format="wav")
-                    
-                    client = speech.SpeechClient(credentials=credentials)
-                    
-                    with open(converted_path, "rb") as audio_file:
-                        content = audio_file.read()
-                    
-                    audio = speech.RecognitionAudio(content=content)
-                    
-                    # Try both specific and unspecified encoding
-                    encodings = [
-                        speech.RecognitionConfig.AudioEncoding.LINEAR16,
-                        speech.RecognitionConfig.AudioEncoding.ENCODING_UNSPECIFIED
-                    ]
-                    
-                    for encoding in encodings:
-                        config = speech.RecognitionConfig(
-                            encoding=encoding,
-                            sample_rate_hertz=rate,
-                            language_code="en-GB",
-                            # Add settings for better transcription of longer audio
-                            enable_automatic_punctuation=True,
-                            model="default",
-                            use_enhanced=True  # Use enhanced model
-                        )
-                        
-                        try:
-                            print(f"Attempting transcription with {rate}Hz and encoding {encoding}")
-                            response = client.recognize(config=config, audio=audio)
-                            
-                            transcript = ""
-                            for result in response.results:
-                                transcript += result.alternatives[0].transcript
-                            
-                            if transcript.strip():
-                                print(f"Successfully transcribed with {rate}Hz and encoding {encoding}")
-                                return transcript.strip()
-                        except Exception as e:
-                            print(f"Failed with {rate}Hz and encoding {encoding}: {e}")
-                except Exception as rate_error:
-                    print(f"Error converting to {rate}Hz: {rate_error}")
-            
-            # Last resort: Try with original audio and auto-detection
-            print("Trying transcription with original audio file")
-            with open(tmp_file_path, "rb") as audio_file:
-                content = audio_file.read()
-            
-            audio = speech.RecognitionAudio(content=content)
-            config = speech.RecognitionConfig(
-                encoding=speech.RecognitionConfig.AudioEncoding.ENCODING_UNSPECIFIED,
-                language_code="en-GB",
-                enable_automatic_punctuation=True,
-                model="default",
-                use_enhanced=True
-            )
-            
-            response = client.recognize(config=config, audio=audio)
-            
-            transcript = ""
-            for result in response.results:
-                transcript += result.alternatives[0].transcript
-            
-            if transcript.strip():
-                return transcript.strip()
-            
-        except Exception as conv_err:
-            print(f"Error in audio conversion/transcription: {conv_err}")
-            
-        # Final fallback approach
-        try:
-            print("Using fallback approach with direct audio")
-            client = speech.SpeechClient(credentials=credentials)
-            
-            with open(tmp_file_path, "rb") as audio_file:
-                content = audio_file.read()
-            
-            audio = speech.RecognitionAudio(content=content)
-            config = speech.RecognitionConfig(
-                encoding=speech.RecognitionConfig.AudioEncoding.ENCODING_UNSPECIFIED,
-                language_code="en-GB",
-                audio_channel_count=1,
-                enable_automatic_punctuation=True,
-                model="default",
-                use_enhanced=True
-            )
-            
-            response = client.recognize(config=config, audio=audio)
-            
-            transcript = ""
-            for result in response.results:
-                transcript += result.alternatives[0].transcript
-            
-            if transcript.strip():
-                return transcript.strip()
-            else:
-                return "Could not transcribe audio. Please type your response."
-                
-        except Exception as e:
-            raise Exception(f"All transcription attempts failed: {str(e)}")
-            
-    except Exception as e:
-        st.error(f"Error in speech recognition: {e}")
-        return f"Error: {str(e)}"
-    finally:
-        # Clean up temp files
-        if os.path.exists(tmp_file_path):
-            os.unlink(tmp_file_path)
-        for rate in [16000, 44100, 48000]:
-            converted_path = f"{tmp_file_path}_{rate}.wav"
-            if os.path.exists(converted_path):
-                os.unlink(converted_path)
-
-def debug_print_tts(audio_content, label="TTS debug"):
-    if audio_content is None:
-        print(f"{label}: No audio returned (None).")
-        return "0 bytes (No audio data)"
-    length = len(audio_content)
-    print(f"{label}: returned {length} bytes of audio.")
-    return f"{length} bytes of audio."
-
-def text_to_speech(text):
-    """Generate TTS audio with fallback formats."""
-    if credentials is None:
-        return None, None
-    
-    tts_client = texttospeech.TextToSpeechClient(credentials=credentials)
-    
-    # Simple voice selection
-    voice = texttospeech.VoiceSelectionParams(
-        language_code="en-GB",
-        ssml_gender=texttospeech.SsmlVoiceGender.NEUTRAL
-    )
-    
-    # Try different audio formats in order of preference
-    formats_to_try = [
-        (texttospeech.AudioEncoding.LINEAR16, "audio/wav"),
-        (texttospeech.AudioEncoding.MP3, "audio/mp3"),
-        (texttospeech.AudioEncoding.OGG_OPUS, "audio/ogg")
-    ]
-    
-    synthesis_input = texttospeech.SynthesisInput(text=text)
-    
-    for encoding, mime_type in formats_to_try:
-        try:
-            audio_config = texttospeech.AudioConfig(
-                audio_encoding=encoding,
-                speaking_rate=1.0,
-                pitch=0.0,
-                volume_gain_db=0.0
-            )
-            
-            response = tts_client.synthesize_speech(
-                input=synthesis_input,
-                voice=voice,
-                audio_config=audio_config
-            )
-            
-            if response.audio_content and len(response.audio_content) > 0:
-                print(f"TTS: Generated {len(response.audio_content)} bytes of {mime_type} audio.")
-                return response.audio_content, mime_type
-        except Exception as e:
-            print(f"TTS error with {mime_type}: {str(e)}")
-    
-    return None, None
-
-def test_tts_detailed():
-    """Run a detailed test of TTS functionality with debugging information."""
-    if credentials is None:
-        return "No credentials available", None, None
-    
-    try:
-        # 1. Create client
-        tts_client = texttospeech.TextToSpeechClient(credentials=credentials)
-        print("TTS client created successfully")
-        
-        # 2. List available voices to verify API connection
-        try:
-            voices = tts_client.list_voices(language_code="en-GB")
-            voice_names = [voice.name for voice in voices.voices]
-            print(f"Available voices: {voice_names[:3]} (showing first 3 of {len(voice_names)})")
-        except Exception as e:
-            print(f"Error listing voices: {str(e)}")
-        
-        # 3. Test with different audio formats
-        formats_to_try = [
-            (texttospeech.AudioEncoding.LINEAR16, "audio/wav"),
-            (texttospeech.AudioEncoding.MP3, "audio/mp3"),
-            (texttospeech.AudioEncoding.OGG_OPUS, "audio/ogg")
-        ]
-        
-        test_input = texttospeech.SynthesisInput(text="This is a test of text to speech.")
-        
-        for encoding, mime_type in formats_to_try:
-            try:
-                voice = texttospeech.VoiceSelectionParams(language_code="en-GB")
-                audio_config = texttospeech.AudioConfig(audio_encoding=encoding)
-                
-                print(f"Trying format: {mime_type}")
-                response = tts_client.synthesize_speech(
-                    input=test_input, 
-                    voice=voice,
-                    audio_config=audio_config
-                )
-                
-                if response.audio_content and len(response.audio_content) > 0:
-                    print(f"Successfully generated {len(response.audio_content)} bytes of {mime_type}")
-                    return f"TTS test completed successfully with format {mime_type}", response.audio_content, mime_type
-            except Exception as e:
-                print(f"Format {mime_type} failed: {e}")
-        
-        return "All audio formats failed", None, None
-    except Exception as e:
-        error_message = f"TTS test failed: {type(e).__name__}: {str(e)}"
-        print(error_message)
-        return error_message, None, None
-
-def try_all_tts_voices():
-    """Try all available TTS voices to find one that works."""
-    if credentials is None:
-        return "No credentials available", None, None
-    
-    results = []
-    try:
-        tts_client = texttospeech.TextToSpeechClient(credentials=credentials)
-        voices = tts_client.list_voices(language_code="en-GB")
-        
-        test_text = "This is a test of the Google Text-to-Speech API."
-        test_input = texttospeech.SynthesisInput(text=test_text)
-        
-        # Try different audio formats
-        formats_to_try = [
-            (texttospeech.AudioEncoding.LINEAR16, "audio/wav"),
-            (texttospeech.AudioEncoding.MP3, "audio/mp3"),
-            (texttospeech.AudioEncoding.OGG_OPUS, "audio/ogg")
-        ]
-        
-        # Try up to 5 voices with different formats
-        for i, voice_info in enumerate(voices.voices[:5]):
-            for encoding, mime_type in formats_to_try:
-                try:
-                    voice = texttospeech.VoiceSelectionParams(
-                        language_code="en-GB",
-                        name=voice_info.name
-                    )
-                    
-                    audio_config = texttospeech.AudioConfig(
-                        audio_encoding=encoding,
-                        speaking_rate=1.0
-                    )
-                    
-                    print(f"Trying voice: {voice_info.name} with format {mime_type}")
-                    response = tts_client.synthesize_speech(
-                        input=test_input,
-                        voice=voice,
-                        audio_config=audio_config
-                    )
-                    
-                    if response and response.audio_content and len(response.audio_content) > 0:
-                        results.append(f"✅ Voice {voice_info.name} with {mime_type}: Generated {len(response.audio_content)} bytes")
-                        # Return the first successful voice
-                        return f"Found working voice: {voice_info.name} with {mime_type}", response.audio_content, mime_type
-                    else:
-                        results.append(f"❌ Voice {voice_info.name} with {mime_type}: No audio content returned")
-                except Exception as e:
-                    results.append(f"❌ Voice {voice_info.name} with {mime_type}: Error: {str(e)}")
-        
-        # If we get here, none of the voices worked
-        return "No working voices found. Details:\n" + "\n".join(results), None, None
-    except Exception as e:
-        error_message = f"Error testing voices: {type(e).__name__}: {str(e)}"
-        print(error_message)
-        return error_message, None, None
-
 def main():
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
@@ -628,155 +322,14 @@ def main():
                 st.success("Access granted.")
             else:
                 st.error("Incorrect password.")
-        return  # Stop if not authenticated
+        return
 
-    # Main content
     st.title("Rugby Taster Session Voice Interview Bot")
 
     if credentials is None:
         st.warning("Google Cloud Speech services are not configured. Voice features will not be available.")
 
-    # --- Verify Google APIs button ---
-    st.write("---")
-    st.write("### Verify Google Cloud APIs")
-    if st.button("Check API Access"):
-        with st.spinner("Verifying API access..."):
-            results = verify_google_apis()
-            st.code(results, language="text")
-
-    # --- Test Audio Playback ---
-    st.write("### Test Audio Playback")
-    st.write("This test will check if your browser can play audio at all.")
-    if st.button("Test Basic Audio Playback"):
-        with st.spinner("Generating test audio..."):
-            audio_bytes = generate_test_audio()
-            if audio_bytes:
-                st.audio(audio_bytes, format="audio/wav")
-                st.markdown(get_audio_download_link(audio_bytes, "audio/wav", "test_tone.wav"), unsafe_allow_html=True)
-                st.success("If you can't hear this test tone, there might be an audio playback issue in your browser.")
-            else:
-                st.error("Failed to generate test audio.")
-    
-    # --- Minimal TTS Test button ---
-    st.write("---")
-    st.write("### Test Basic TTS")
-    st.write("Use this button to confirm if TTS is working at all.")
-    if st.button("Test Basic TTS"):
-        if credentials:
-            st.write("Attempting a minimal TTS call...")
-            tts_client = texttospeech.TextToSpeechClient(credentials=credentials)
-            test_input = texttospeech.SynthesisInput(text="Hello from the TTS test!")
-            voice = texttospeech.VoiceSelectionParams(
-                language_code="en-GB"  # no named voice
-            )
-            
-            # Try different formats
-            formats_to_try = [
-                (texttospeech.AudioEncoding.LINEAR16, "audio/wav"),
-                (texttospeech.AudioEncoding.MP3, "audio/mp3"),
-                (texttospeech.AudioEncoding.OGG_OPUS, "audio/ogg")
-            ]
-            
-            success = False
-            for encoding, mime_type in formats_to_try:
-                try:
-                    audio_config = texttospeech.AudioConfig(audio_encoding=encoding)
-                    response = tts_client.synthesize_speech(
-                        input=test_input,
-                        voice=voice,
-                        audio_config=audio_config
-                    )
-                    audio_bytes = response.audio_content
-                    bytes_len = len(audio_bytes) if audio_bytes else 0
-                    
-                    if audio_bytes and bytes_len > 0:
-                        st.write(f"Basic TTS returned {bytes_len} bytes ({mime_type}).")
-                        print(f"[Minimal TTS] returned {bytes_len} bytes ({mime_type}).")
-                        
-                        # Display audio with different methods
-                        st.write("Audio Player:")
-                        st.audio(audio_bytes, format=mime_type)
-                        
-                        # Provide download link
-                        st.write("Download Link (if audio player doesn't work):")
-                        st.markdown(get_audio_download_link(audio_bytes, mime_type, f"test_audio.{mime_type.split('/')[-1]}"), unsafe_allow_html=True)
-                        
-                        success = True
-                        break
-                except Exception as e:
-                    st.warning(f"Format {mime_type} failed: {e}")
-                    print(f"TTS test with {mime_type} error: {e}")
-            
-            if not success:
-                st.error("All audio formats failed. Please check logs for details.")
-        else:
-            st.error("No credentials available for TTS test.")
-
-    # --- Voice Recognition Test ---
-    st.write("### Test Voice Recognition")
-    st.write("This test checks if the speech-to-text functionality is working.")
-    if st.button("Test Voice Recognition"):
-        if credentials:
-            st.write("Please speak into your microphone:")
-            test_audio_bytes = audio_recorder(
-                pause_threshold=2.0,  # Longer pause threshold before stopping
-                recording_color="#FF5733",  # More visible recording color
-                neutral_color="#6aa36f"
-            )
-            if test_audio_bytes:
-                st.success("Audio recorded!")
-                
-                # Add download link for the audio file for debugging
-                st.write("Download the recorded audio for troubleshooting:")
-                st.markdown(get_audio_download_link(test_audio_bytes, "audio/wav", "test_recording.wav"), unsafe_allow_html=True)
-                
-                with st.spinner("Transcribing your speech..."):
-                    transcript = transcribe_audio(test_audio_bytes)
-                    if transcript and not transcript.startswith("Error:"):
-                        st.success("Transcription successful!")
-                        st.write(f"**Transcribed Text:** {transcript}")
-                    else:
-                        st.error("Transcription failed.")
-                        st.write(f"Details: {transcript}")
-        else:
-            st.error("No credentials available for voice recognition test.")
-
-    # --- Detailed TTS Test button ---
-    st.write("### Detailed TTS Test")
-    st.write("This test will provide more information to diagnose TTS issues.")
-    if st.button("Run Detailed TTS Test"):
-        if credentials:
-            with st.spinner("Testing TTS with detailed diagnostics..."):
-                message, audio_bytes, mime_type = test_tts_detailed()
-                st.write(message)
-                if audio_bytes:
-                    st.audio(audio_bytes, format=mime_type)
-                    st.markdown(get_audio_download_link(audio_bytes, mime_type, f"detailed_test.{mime_type.split('/')[-1]}"), unsafe_allow_html=True)
-                    st.success(f"Successfully generated {len(audio_bytes)} bytes of audio. If you can't hear it, try downloading it.")
-                else:
-                    st.error("No audio was generated.")
-        else:
-            st.error("No credentials available for TTS test.")
-
-    # --- Try All Voices button ---
-    st.write("### Try All Available Voices")
-    st.write("This will test multiple voices to find one that works.")
-    if st.button("Try All Voices"):
-        if credentials:
-            with st.spinner("Testing multiple TTS voices..."):
-                message, audio_bytes, mime_type = try_all_tts_voices()
-                st.write(message)
-                if audio_bytes:
-                    st.audio(audio_bytes, format=mime_type)
-                    st.markdown(get_audio_download_link(audio_bytes, mime_type, f"voice_test.{mime_type.split('/')[-1]}"), unsafe_allow_html=True)
-                    st.success(f"Successfully generated {len(audio_bytes)} bytes of audio. If you can't hear it, try downloading it.")
-                else:
-                    st.error("No audio was generated from any voice.")
-        else:
-            st.error("No credentials available for voice testing.")
-    
-    st.write("---")
-
+    # --- Interview Initialization ---
     if "conversation" not in st.session_state:
         st.session_state.conversation = []
     if "current_question" not in st.session_state:
@@ -803,12 +356,6 @@ def main():
                 st.session_state.current_audio = None
                 st.session_state.current_audio_mime = None
 
-    # Initialize session state for recording management
-    if "current_recordings" not in st.session_state:
-        st.session_state.current_recordings = []
-    if "show_recordings_ui" not in st.session_state:
-        st.session_state.show_recordings_ui = False
-    
     st.write("""
     **Information Sheet and Consent**  
     By ticking yes below, you consent to participate in this interview about your experience in a rugby taster session. 
@@ -820,33 +367,17 @@ def main():
     consent = st.checkbox("I have read the information sheet and give my consent to participate in this interview.")
 
     if consent:
-        # Display current question
+        # Display current question and play audio if available
         st.markdown(f"**AI Question:** {st.session_state.current_question}")
-        
-        # If we have TTS audio, show it with autoplay option
         if "current_audio" in st.session_state and st.session_state.current_audio:
-            mime_type = st.session_state.get("current_audio_mime", "audio/wav")
             st.caption(f"(Audio question will play automatically. Length = {len(st.session_state.current_audio)} bytes)")
-            
-            # Create columns for better layout
             col1, col2 = st.columns([3, 1])
-            
             with col1:
-                # Try to use autoplay
-                st.markdown(get_autoplay_audio_html(st.session_state.current_audio, mime_type), unsafe_allow_html=True)
-                
-                # Also provide standard audio player as fallback
-                st.audio(st.session_state.current_audio, format=mime_type)
-            
+                st.markdown(get_autoplay_audio_html(st.session_state.current_audio, st.session_state.current_audio_mime), unsafe_allow_html=True)
+                st.audio(st.session_state.current_audio, format=st.session_state.current_audio_mime)
             with col2:
-                # Download link
-                st.markdown(get_audio_download_link(st.session_state.current_audio, mime_type, "question_audio.wav"), unsafe_allow_html=True)
-                
-                # Explicit play button (more obvious)
                 if st.button("🔊 Play Question"):
-                    # This forces a rerun which helps with autoplay
                     st.rerun()
-            
             if st.button("Regenerate Question Audio"):
                 try:
                     audio_bytes, mime_type = text_to_speech(st.session_state.current_question)
@@ -860,73 +391,29 @@ def main():
                     st.rerun()
                 except Exception as e:
                     st.error(f"Error regenerating audio: {e}")
-        else:
-            st.warning("Audio for this question is not available. You can try generating it.")
-            if st.button("Generate Audio for Question"):
-                try:
-                    audio_bytes, mime_type = text_to_speech(st.session_state.current_question)
-                    dbg = debug_print_tts(audio_bytes, label="On-demand Q TTS")
-                    if audio_bytes and len(audio_bytes) > 0:
-                        st.session_state.current_audio = audio_bytes
-                        st.session_state.current_audio_mime = mime_type
-                        st.success(f"Audio generated successfully. {dbg}")
-                        st.rerun()
-                    else:
-                        st.error(f"Failed to generate audio (0 bytes). {dbg}")
-                except Exception as e:
-                    st.error(f"Error generating audio: {e}")
-        
-        # Improved voice recording section with concatenation support
+
+        # --- Voice Recording Section ---
         if credentials is not None:
             st.write("---")
             st.write("**Speak your answer:**")
-            st.write("Continue speaking until you've completed your answer. If recording stops, you can click record again to continue.")
-            
-            # Display recording count
-            if st.session_state.current_recordings:
-                st.write(f"**{len(st.session_state.current_recordings)} recording(s) captured so far**")
-            
-            # Record audio with better parameters
+            st.write("Click the record button to start recording your answer. The recording will continue until you press the stop button.")
             audio_bytes = audio_recorder(
-                pause_threshold=2.0,  # Longer pause threshold before stopping
-                recording_color="#FF5733",  # More visible recording color
+                pause_threshold=2.0,
+                recording_color="#FF5733",
                 neutral_color="#6aa36f",
-                energy_threshold=0.01,  # Lower threshold to detect quieter speech
+                energy_threshold=0.01,
             )
-            
             if audio_bytes:
-                # Store the new recording
-                st.session_state.current_recordings.append(audio_bytes)
-                st.success(f"Recording {len(st.session_state.current_recordings)} captured! You can continue recording if needed.")
-                st.session_state.show_recordings_ui = True
-                st.rerun()  # Refresh to show the updated UI
-            
-            # Show UI for managing recordings
-            if st.session_state.show_recordings_ui and st.session_state.current_recordings:
-                if st.button("Process All Recordings"):
-                    with st.spinner("Combining recordings and transcribing..."):
-                        # Combine all recordings
-                        combined_audio = combine_audio_segments(st.session_state.current_recordings)
-                        
-                        # Show download link for debugging
-                        st.write("Download the combined recording for troubleshooting:")
-                        st.markdown(get_audio_download_link(combined_audio, "audio/wav", "combined_recording.wav"), unsafe_allow_html=True)
-                        
-                        # Transcribe the combined audio
-                        transcript = transcribe_audio(combined_audio)
-                        st.session_state.current_transcript = transcript
-                        st.write(f"**Transcribed:** {transcript}")
-                
-                # Clear recordings button
-                if st.button("Clear recordings and start over"):
-                    st.session_state.current_recordings = []
-                    st.session_state.current_transcript = ""
-                    st.session_state.show_recordings_ui = False
-                    st.rerun()
+                st.success("Recording captured!")
+                with st.spinner("Transcribing your speech..."):
+                    transcript = transcribe_audio(audio_bytes)
+                    st.session_state.current_transcript = transcript
+                    st.write(f"**Transcribed:** {transcript}")
         else:
             st.info("Voice recording not available (no credentials). Please type your response below.")
             st.session_state.current_transcript = ""
         
+        # --- Text Input for User Answer ---
         user_answer = st.text_area(
             "Your response (edit transcription or type):", 
             value=st.session_state.get("current_transcript", ""),
@@ -939,7 +426,6 @@ def main():
             index=4
         )
 
-        # Progress
         completed_questions = len([entry for entry in st.session_state.conversation if entry['role'] == "user"])
         progress_percentage = min(completed_questions / total_questions, 1.0)
         st.write(f"**Interview Progress: {completed_questions} out of {total_questions} questions answered**")
@@ -956,7 +442,6 @@ def main():
                     f"Provide feedback and ask a follow-up question."
                 )
                 ai_response = generate_response(ai_prompt, st.session_state.conversation)
-                
                 st.session_state.conversation.append({"role": "assistant", "content": ai_response})
                 st.session_state.current_question = ai_response
                 
@@ -977,11 +462,7 @@ def main():
                         st.session_state.current_audio = None
                         st.session_state.current_audio_mime = None
                 
-                # Reset recording state for next question
                 st.session_state.current_transcript = ""
-                st.session_state.current_recordings = []
-                st.session_state.show_recordings_ui = False
-                
                 st.rerun()
             else:
                 st.warning("Please provide an answer before submitting.")
@@ -989,11 +470,9 @@ def main():
         if st.button("End Interview"):
             st.success("Interview completed! Thank you for sharing your rugby taster session experience.")
             st.session_state.current_question = "Interview ended"
-            
             transcript_md = convert_to_markdown(st.session_state.conversation)
             if send_email(transcript_md):
                 st.info("Your transcript has been emailed to the researcher.")
-            
             st.markdown(get_transcript_download_link(st.session_state.conversation), unsafe_allow_html=True)
 
         if st.checkbox("Show Interview Transcript"):
