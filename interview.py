@@ -106,12 +106,13 @@ def get_autoplay_audio_html(audio_bytes, mime_type):
         return ""
     b64 = base64.b64encode(audio_bytes).decode()
     audio_src = f"data:{mime_type};base64,{b64}"
-    return f"""
-    <audio autoplay="true" controls>
-        <source src="{audio_src}" type="{mime_type}">
-        Your browser does not support the audio element.
-    </audio>
-    
+    return (
+        f'<audio autoplay="true" controls>\n'
+        f'    <source src="{audio_src}" type="{mime_type}">\n'
+        "    Your browser does not support the audio element.\n"
+        "</audio>\n"
+    )
+
 def send_email(transcript_md):
     subject = "Interview Transcript"
     body = "Please find attached the interview transcript."
@@ -152,7 +153,7 @@ def transcribe_audio(audio_bytes):
     
     try:
         print(f"Audio file size: {len(audio_bytes)} bytes")
-        # Convert the audio to mono using pydub (if needed) and try different sample rates
+        # Convert the audio to mono using pydub and try different sample rates
         sound = AudioSegment.from_file(tmp_file_path, format="wav")
         sound_mono = sound.set_channels(1)
         sample_rates = [16000, 44100, 48000]
@@ -168,7 +169,6 @@ def transcribe_audio(audio_bytes):
                 with open(converted_path, "rb") as audio_file:
                     content = audio_file.read()
                 audio = speech.RecognitionAudio(content=content)
-                # Try both LINEAR16 and auto-detection encoding
                 for encoding in [speech.RecognitionConfig.AudioEncoding.LINEAR16, speech.RecognitionConfig.AudioEncoding.ENCODING_UNSPECIFIED]:
                     config = speech.RecognitionConfig(
                         encoding=encoding,
@@ -191,7 +191,7 @@ def transcribe_audio(audio_bytes):
             except Exception as rate_error:
                 print(f"Error converting to {rate}Hz: {rate_error}")
         
-        # Final fallback: try with original audio
+        # Final fallback: try with original audio file
         print("Trying transcription with original audio file")
         with open(tmp_file_path, "rb") as audio_file:
             content = audio_file.read()
@@ -356,13 +356,13 @@ def main():
                 st.session_state.current_audio = None
                 st.session_state.current_audio_mime = None
 
-    st.write("""
-    **Information Sheet and Consent**  
-    By ticking yes below, you consent to participate in this interview about your experience in a rugby taster session. 
-    Your responses may be anonymously quoted in publications. You may end the interview at any time and request 
-    your data be removed by emailing tony.myers@staff.newman.ac.uk. 
-    An AI assistant will ask main questions and follow-up probing questions.
-    """)
+    st.write(
+        "**Information Sheet and Consent**  \n"
+        "By ticking yes below, you consent to participate in this interview about your experience in a rugby taster session.  \n"
+        "Your responses may be anonymously quoted in publications. You may end the interview at any time and request  \n"
+        "your data be removed by emailing tony.myers@staff.newman.ac.uk.  \n"
+        "An AI assistant will ask main questions and follow-up probing questions."
+    )
 
     consent = st.checkbox("I have read the information sheet and give my consent to participate in this interview.")
 
