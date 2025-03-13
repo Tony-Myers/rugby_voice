@@ -297,7 +297,7 @@ def main():
         consent_choice = st.radio("Do you consent to participate?", ("No", "Yes"), index=1)
         if consent_choice == "Yes":
             st.session_state["consent_obtained"] = True
-            st.experimental_rerun()
+            st.rerun()
         else:
             st.stop()
     ### CHANGES END ###
@@ -385,7 +385,7 @@ def main():
                     st.session_state["rating_audio"] = audio_rating
                     st.session_state["rating_mime"] = rating_mime
 
-                    st.experimental_rerun()
+                    st.rerun()
             except Exception as e:
                 st.error(f"Error processing recorded audio: {e}")
 
@@ -442,7 +442,7 @@ def main():
 
             # Go back to "ready_for_question" phase
             st.session_state["phase"] = "ready_for_question"
-            st.experimental_rerun()
+            st.rerun()
 
     # End interview logic
     if st.button("End Interview"):
@@ -465,7 +465,7 @@ def main():
     if st.button("Restart Interview"):
         for key in list(st.session_state.keys()):
             del st.session_state[key]
-        st.experimental_rerun()
+        st.rerun()
 
 
 if __name__ == "__main__":
