@@ -98,7 +98,6 @@ def get_autoplay_audio_html(audio_bytes, mime_type):
     if audio_bytes is None:
         return ""
     b64 = base64.b64encode(audio_bytes).decode()
-    # Generate a unique id and add a 500ms delay before play
     element_id = f"audio_{int(time.time()*1000)}"
     html_str = f'''
     <audio id="{element_id}" controls autoplay>
@@ -108,8 +107,10 @@ def get_autoplay_audio_html(audio_bytes, mime_type):
     <script>
         setTimeout(function() {{
             var audioElem = document.getElementById("{element_id}");
-            if (audioElem) {{
-                audioElem.play();
+            if(audioElem) {{
+                audioElem.play().catch(function(e) {{
+                    console.log("Autoplay failed:", e);
+                }});
             }}
         }}, 500);
     </script>
@@ -147,7 +148,7 @@ def transcribe_audio(audio_bytes):
         tmp_file_path = tmp_file.name
     try:
         print(f"Audio file size: {len(audio_bytes)} bytes")
-        # Convert to mono and force sample rate 16,000 Hz
+        # Convert to mono and enforce 16,000 Hz sample rate
         sound = AudioSegment.from_file(tmp_file_path, format="wav")
         mono_audio = sound.set_channels(1).set_frame_rate(16000)
         buffer = io.BytesIO()
@@ -279,7 +280,7 @@ def main():
 
     st.title("Rugby Taster Session Voice Interview Bot")
     if credentials is None:
-        st.warning("Google Cloud Speech services are not configured. Voice features will not be available.")
+        st.warning("Google Cloud Speech services are not configured. Voice features are not available.")
     if "conversation" not in st.session_state:
         st.session_state["conversation"] = []
     if "current_question" not in st.session_state:
@@ -321,8 +322,8 @@ def main():
     if credentials is not None:
         st.write("---")
         st.write("**Record your answer:**")
-        st.write("Press **Record Answer** (green mic) to start and **Stop Recording Answer** (red mic) to finish.")
-        # Set a very high pause_threshold to force manual stopping
+        st.write("Press **Record Answer** (green mic) to start and **Stop Recording Answer** (red mic) when you are finished.")
+        # Use a very high pause_threshold to force manual stopping.
         audio_bytes = audio_recorder(
             pause_threshold=9999,
             recording_color="#FF5733",
@@ -330,34 +331,43 @@ def main():
             energy_threshold=0.01,
         )
         if audio_bytes:
-            st.success("Recording captured!")
-            with st.spinner("Transcribing your speech..."):
-                transcript = transcribe_audio(audio_bytes)
-                st.session_state["current_transcript"] = transcript
-                st.write(f"**Transcribed:** {transcript}")
-            if transcript.strip():
-                combined_user_content = f"Answer: {transcript}\nRating: 5"
-                st.session_state["conversation"].append({"role": "user", "content": combined_user_content})
-                ai_prompt = f"User's answer: {transcript}\nUser's rating: 5\nProvide feedback and ask a follow-up question."
-                ai_response = generate_response(ai_prompt, st.session_state["conversation"])
-                st.session_state["conversation"].append({"role": "assistant", "content": ai_response})
-                st.session_state["current_question"] = ai_response
-                if credentials is not None:
-                    try:
-                        next_audio, mime_type = text_to_speech(ai_response)
-                        dbg = debug_print_tts(next_audio, label="Follow-up TTS")
-                        if next_audio and len(next_audio) > 0:
-                            st.session_state["current_audio"] = next_audio
-                            st.session_state["current_audio_mime"] = mime_type
-                        else:
-                            st.warning(f"Failed to generate audio for follow-up. {dbg}")
-                            st.session_state["current_audio"] = None
-                            st.session_state["current_audio_mime"] = None
-                    except Exception as e:
-                        st.warning(f"Unable to generate speech: {e}")
-                        st.session_state["current_audio"] = None
-                        st.session_state["current_audio_mime"] = None
-                st.rerun()
+            # Check the duration of the recording
+            try:
+                recorded_audio = AudioSegment.from_file(io.BytesIO(audio_bytes), format="wav")
+                duration_sec = len(recorded_audio) / 1000.0
+                if duration_sec < 2.0:
+                    st.warning("Recording too short (less than 2 seconds). Please record your answer again.")
+                else:
+                    st.success("Recording captured!")
+                    with st.spinner("Transcribing your speech..."):
+                        transcript = transcribe_audio(audio_bytes)
+                        st.session_state["current_transcript"] = transcript
+                        st.write(f"**Transcribed:** {transcript}")
+                    if transcript.strip():
+                        combined_user_content = f"Answer: {transcript}\nRating: 5"
+                        st.session_state["conversation"].append({"role": "user", "content": combined_user_content})
+                        ai_prompt = f"User's answer: {transcript}\nUser's rating: 5\nProvide feedback and ask a follow-up question."
+                        ai_response = generate_response(ai_prompt, st.session_state["conversation"])
+                        st.session_state["conversation"].append({"role": "assistant", "content": ai_response})
+                        st.session_state["current_question"] = ai_response
+                        if credentials is not None:
+                            try:
+                                next_audio, mime_type = text_to_speech(ai_response)
+                                dbg = debug_print_tts(next_audio, label="Follow-up TTS")
+                                if next_audio and len(next_audio) > 0:
+                                    st.session_state["current_audio"] = next_audio
+                                    st.session_state["current_audio_mime"] = mime_type
+                                else:
+                                    st.warning(f"Failed to generate audio for follow-up. {dbg}")
+                                    st.session_state["current_audio"] = None
+                                    st.session_state["current_audio_mime"] = None
+                            except Exception as e:
+                                st.warning(f"Unable to generate speech: {e}")
+                                st.session_state["current_audio"] = None
+                                st.session_state["current_audio_mime"] = None
+                        st.rerun()
+            except Exception as e:
+                st.error(f"Error processing the recorded audio: {e}")
     else:
         user_answer = st.text_area("Your response (edit transcription or type):",
                                    value=st.session_state.get("current_transcript", ""), key="user_input")
